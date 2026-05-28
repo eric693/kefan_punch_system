@@ -53,7 +53,7 @@ def _refresh_session():
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN', '')
 LINE_CHANNEL_SECRET       = os.environ.get('LINE_CHANNEL_SECRET', '')
 ADMIN_PASSWORD            = os.environ.get('ADMIN_PASSWORD', 'admin123')
-RENDER_EXTERNAL_URL       = os.environ.get('RENDER_EXTERNAL_URL', '')
+RENDER_EXTERNAL_URL       = os.environ.get('APP_BASE_URL') or os.environ.get('RENDER_EXTERNAL_URL', '')
 
 print(f"[startup] DATABASE_URL prefix: {DATABASE_URL[:20] if DATABASE_URL else 'NOT SET'}")
 
