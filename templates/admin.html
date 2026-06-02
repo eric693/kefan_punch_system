@@ -19763,6 +19763,7 @@ function filterStoreList() {
         <td>
           <button class="btn btn-sm" onclick="openStoreModal(${JSON.stringify(s).replace(/"/g,'&quot;')})">${t('btn.edit')}</button>
           <button class="btn btn-sm" onclick="loadStoreStaff(${s.id})">${t('btn.view_staff')}</button>
+          <button class="btn btn-sm" style="background:var(--red-light);color:var(--red);border-color:var(--red)" onclick="deleteStore(${s.id})">${t('btn.delete')}</button>
         </td>
       </tr>`).join('');
 }
