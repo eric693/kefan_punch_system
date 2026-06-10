@@ -6113,6 +6113,18 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
                 "SELECT * FROM salary_items WHERE active=TRUE ORDER BY sort_order, id"
             ).fetchall()
         for it in items_rows:
+            # 生日相關津貼：只在員工生日當月發放
+            if '生日' in (it['name'] or ''):
+                birth_date = staff.get('birth_date')
+                if birth_date:
+                    try:
+                        birth_month = int(str(birth_date)[5:7])
+                        if birth_month != m:
+                            continue
+                    except Exception:
+                        continue
+                else:
+                    continue  # 無生日資料則不發放
             formula  = it['formula'] or ''
             calc_amt = float(it['amount'] or 0)
             if formula:
