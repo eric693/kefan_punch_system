@@ -6274,7 +6274,7 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
         })
         deduction_total += adv_amt
 
-    # ── 司機補貼（申請核准） ─────────────────────────────────────
+    # ── 司機補貼（申請核准 + 每日固定，兩者依日期去重）────────────────────
     _ms_da, _me_da = _month_range(month)
     if batch_ctx is not None:
         drvr_rows = batch_ctx.get('driver_allowances', {}).get(staff['id'], [])
@@ -6286,18 +6286,53 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
               AND apply_date >= %s::date AND apply_date < %s::date
         """, (staff['id'], _ms_da, _me_da)).fetchall()
         drvr_rows = [dict(r) for r in drvr_rows]
+    # 已核准申請的日期集合（每日固定補貼遇同一天則略過，避免重複計算）
+    _drvr_req_dates = set()
+    for _dr in drvr_rows:
+        _ad = _dr['apply_date']
+        _drvr_req_dates.add(_ad.isoformat() if hasattr(_ad, 'isoformat') else str(_ad))
     if drvr_rows:
         _drvr_total = sum(float(r['amount']) for r in drvr_rows)
         _drvr_cnt = len(drvr_rows)
         items.append({
             'id': 'driver_allowance_requests',
-            'name': '司機補貼',
+            'name': '司機補貼（申請）',
             'type': 'allowance',
             'amount': round(_drvr_total, 2),
             'formula': '',
-            'calc_note': f'{_drvr_cnt}筆 × $125',
+            'calc_note': f'{_drvr_cnt}筆核准',
         })
         allowance_total += _drvr_total
+
+    # 每日固定司機補貼（員工資料欄位）：實際出勤日 × 金額，排除已申請核准的日期
+    _driver_per_day = float(staff.get('driver_allowance') or 0)
+    if _driver_per_day > 0:
+        if salary_type in ('hourly', 'daily'):
+            _attend_dates = {p['date'] for p in punch_details}
+        elif batch_ctx is not None:
+            _attend_dates = set(batch_ctx['punch_dates'].get(staff['id'], set()))
+        else:
+            _dpd_s, _dpd_e = _month_range(month)
+            _dpd_rows = conn.execute("""
+                SELECT DISTINCT (punched_at AT TIME ZONE 'Asia/Taipei')::date as work_date
+                FROM punch_records WHERE staff_id=%s
+                  AND punched_at AT TIME ZONE 'Asia/Taipei' >= %s::date
+                  AND punched_at AT TIME ZONE 'Asia/Taipei' < %s::date
+                  AND deleted_at IS NULL
+            """, (staff['id'], _dpd_s, _dpd_e)).fetchall()
+            _attend_dates = {r['work_date'].isoformat() if hasattr(r['work_date'], 'isoformat') else str(r['work_date']) for r in _dpd_rows}
+        _drvr_day_cnt = len([d for d in _attend_dates if d not in _drvr_req_dates])
+        if _drvr_day_cnt > 0:
+            _drvr_day_total = round(_driver_per_day * _drvr_day_cnt, 2)
+            items.append({
+                'id': 'driver_allowance_daily',
+                'name': '司機補貼（每日）',
+                'type': 'allowance',
+                'amount': _drvr_day_total,
+                'formula': '',
+                'calc_note': f'{_drvr_day_cnt}天 × ${int(_driver_per_day)}',
+            })
+            allowance_total += _drvr_day_total
 
     # ── 餐費補貼（每日固定補貼 × 實際出勤天數）────────────────────────
     if meal_allowance > 0:
