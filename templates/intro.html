@@ -4,8 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0d7d74">
-<link rel="icon" href="/static/pwa/admin-192.png">
-<title>可凡出勤・排班・薪資管理系統 — 系統介紹</title>
+<title>出勤・排班・薪資管理系統 — 系統介紹</title>
 <style>
   :root{
     --bg:#f5f7f8; --surface:#ffffff; --surface-2:#eef3f3;
@@ -44,7 +43,7 @@
     font-family:"PingFang TC","Noto Sans TC","Microsoft JhengHei",-apple-system,"Segoe UI",sans-serif;
     line-height:1.7; -webkit-font-smoothing:antialiased;
   }
-  .wrap{max-width:940px;margin:0 auto;padding:clamp(20px,5vw,56px) clamp(16px,4vw,40px) 72px}
+  .wrap{max-width:940px;margin:0 auto;padding:clamp(20px,5vw,56px) clamp(16px,4vw,40px) 64px}
   .tnum{font-variant-numeric:tabular-nums}
 
   /* ── Header ── */
@@ -73,6 +72,7 @@
   .stat{background:var(--surface);padding:16px 18px}
   .stat b{display:block;font-size:clamp(20px,3vw,26px);font-weight:800;color:var(--teal);line-height:1.15}
   .stat span{display:block;margin-top:4px;font-size:12.5px;color:var(--muted);line-height:1.45}
+  @media (max-width:620px){ .stats{grid-template-columns:1fr 1fr} }
 
   /* ── Section ── */
   section{margin-top:44px}
@@ -81,6 +81,7 @@
   .sec-head .k{font-size:13px;color:var(--muted);margin-left:auto;text-align:right}
   .rule{height:3px;border-radius:3px;background:var(--teal);width:44px;margin-bottom:20px}
   .rule.amber{background:var(--amber)}
+  @media (max-width:560px){ .sec-head .k{display:none} }
 
   /* ── Cards ── */
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));gap:12px}
@@ -91,6 +92,10 @@
   .card .ico{
     display:inline-grid;place-items:center;width:34px;height:34px;border-radius:9px;
     background:var(--teal-soft);color:var(--teal);margin-bottom:11px;
+  }
+  .card .ico svg{
+    width:19px;height:19px;fill:none;stroke:currentColor;
+    stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;
   }
   .card h3{font-size:15.5px;font-weight:750;margin-bottom:5px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
   .card p{font-size:13.5px;color:var(--muted);line-height:1.62}
@@ -104,7 +109,7 @@
   /* ── Chat demo ── */
   .demo{
     background:var(--surface-2);border:1px solid var(--line);border-radius:14px;
-    padding:18px 20px;margin-top:4px;
+    padding:18px 20px;
   }
   .demo .bubble{
     display:inline-block;background:var(--teal);color:#fff;font-size:13.5px;font-weight:600;
@@ -115,25 +120,20 @@
     font-size:13px;padding:11px 14px;border-radius:4px 14px 14px 14px;margin:6px 0 2px;
     max-width:340px;white-space:pre-line;
   }
-  .demo .cmd-note{font-size:12px;color:var(--muted);margin:2px 0 10px}
+  .demo .cmd-note{font-size:12px;color:var(--muted);margin:2px 0 0}
 
   /* ── Spec table ── */
-  .spec{width:100%;border-collapse:collapse;margin-top:4px;font-size:13.5px}
+  .spec-wrap{overflow-x:auto}
+  .spec{width:100%;border-collapse:collapse;font-size:13.5px}
   .spec th,.spec td{text-align:left;padding:11px 4px;border-bottom:1px solid var(--line);vertical-align:top}
-  .spec th{width:130px;font-weight:700;color:var(--ink)}
+  .spec th{width:120px;font-weight:700;color:var(--ink);white-space:nowrap}
   .spec td{color:var(--muted)}
 
-  /* ── Footer / CTA ── */
-  .cta{
-    margin-top:48px;background:linear-gradient(135deg,var(--teal),var(--teal-d));
-    border-radius:16px;padding:28px clamp(20px,4vw,34px);color:#fff;
+  /* ── Footer ── */
+  .foot{
+    margin-top:48px;padding-top:20px;border-top:1px solid var(--line);
+    font-size:12.5px;color:var(--muted);line-height:1.75;
   }
-  .cta h2{font-size:clamp(19px,2.6vw,23px);font-weight:800;letter-spacing:-.01em}
-  .cta p{margin-top:8px;color:rgba(255,255,255,.86);font-size:14.5px;max-width:52ch}
-  .cta .links{display:flex;flex-wrap:wrap;gap:10px 26px;margin-top:18px;font-size:14px}
-  .cta .links div span{display:block;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.6);margin-bottom:3px}
-  .cta .links a,.cta .links b{color:#fff;text-decoration:none;font-weight:700;border-bottom:1px solid rgba(255,255,255,.4)}
-  .foot{margin-top:26px;font-size:12px;color:var(--muted);line-height:1.7}
   .foot b{color:var(--ink)}
 </style>
 </head>
@@ -142,7 +142,7 @@
 
 <div class="wrap">
 
-  <div class="eyebrow"><span class="dot"></span>可凡企業社 · 出勤薪資系統</div>
+  <div class="eyebrow"><span class="dot"></span>系統介紹</div>
   <h1>出勤、排班、薪資<br><span class="accent">一站式雲端管理系統</span></h1>
   <p class="lede">員工用 LINE 就能打卡、請假、加班、看薪資單；管理者一個後台管完多門市的出勤、排班與人事。
   從每天的上下班打卡，到月底自動算薪、勞健保、加班費與各項補貼，全程數位留存，不用再手抄、對帳、重算。</p>
@@ -160,22 +160,22 @@
     <div class="rule"></div>
     <div class="cards">
       <div class="card">
-        <div class="ico">🕒</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></svg></div>
         <h3>四種打卡</h3>
         <p>上班、下班、開車去、開車回一鍵完成，搭配 GPS 定位與公司 WiFi 雙重驗證，杜絕代打卡。</p>
       </div>
       <div class="card">
-        <div class="ico">🌴</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/><path d="M9.5 15.5l1.8 1.8 3.6-3.6"/></svg></div>
         <h3>請假申請 <span class="tag teal">即時餘額</span></h3>
         <p>輸入「請假 特休 2026-07-15」即送出，系統自動查詢假別餘額並送主管審核。</p>
       </div>
       <div class="card">
-        <div class="ico">⏱️</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9.5V13"/><path d="M9.5 2h5M12 2v3"/></svg></div>
         <h3>加班申請</h3>
         <p>輸入「加班 2026-07-15 3」即申請當日加班時數，核准後自動計入當月薪資或換補休。</p>
       </div>
       <div class="card">
-        <div class="ico">📄</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg></div>
         <h3>薪資即時回饋</h3>
         <p>打卡後即回報當日工時與薪資預估；月薪資單也能直接在 LINE 查看，透明清楚。</p>
       </div>
@@ -201,32 +201,32 @@
     <div class="rule"></div>
     <div class="cards">
       <div class="card">
-        <div class="ico">🏬</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V8.5L12 3l8 5.5V21"/><path d="M9 21v-6h6v6"/><path d="M3 21h18"/></svg></div>
         <h3>多門市與權限</h3>
         <p>多門市集中管理、員工／離職名冊，模組級權限讓每位管理員只看見被授權的功能。</p>
       </div>
       <div class="card">
-        <div class="ico">🗓️</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/><path d="M7.5 14h3M13.5 14h3M7.5 17.5h3M13.5 17.5h3"/></svg></div>
         <h3>排班與審核</h3>
         <p>排班表、補打卡、請假、加班、差旅、費用申請，全部在同一個待審清單一次處理。</p>
       </div>
       <div class="card">
-        <div class="ico">💰</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.8"/><path d="M6 10v4M18 10v4"/></svg></div>
         <h3>薪資批次產生</h3>
         <p>一鍵產生全員當月薪資，逐項可追溯；薪資單 PDF、Excel／PDF 報表一鍵匯出。</p>
       </div>
       <div class="card">
-        <div class="ico">🎓</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4L2.5 9 12 14l9.5-5z"/><path d="M6.5 11.2V16c0 1.4 2.5 2.8 5.5 2.8s5.5-1.4 5.5-2.8v-4.8"/><path d="M21.5 9v5"/></svg></div>
         <h3>人事與資產</h3>
         <p>教育訓練時數追蹤與到期提醒、資產借還登記、公告發佈，人事庶務一站收齊。</p>
       </div>
       <div class="card">
-        <div class="ico">🔐</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/><path d="M12 15v2"/></svg></div>
         <h3>安全與稽核</h3>
         <p>WebAuthn 生物辨識登入、完整操作稽核日誌，每一筆異動都留下紀錄。</p>
       </div>
       <div class="card">
-        <div class="ico">📱</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M10.5 18.5h3"/></svg></div>
         <h3>手機 App 端</h3>
         <p>另提供 JWT 手機 API，員工也能透過專屬 App 打卡與查詢，與 LINE、後台資料同步。</p>
       </div>
@@ -239,17 +239,17 @@
     <div class="rule amber"></div>
     <div class="cards">
       <div class="card amber">
-        <div class="ico">🧮</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="2.5" width="14" height="19" rx="2"/><path d="M8.5 6.5h7"/><path d="M9 11h.01M12 11h.01M15 11h.01M9 14.5h.01M12 14.5h.01M15 14.5h.01M9 18h6"/></svg></div>
         <h3>三制自動計薪</h3>
         <p>月薪、日薪、時薪三種制度，依打卡工時、出勤天數與排班自動計算本薪。</p>
       </div>
       <div class="card amber">
-        <div class="ico">📈</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l5.5-5.5 3.5 3.5L21 6"/><path d="M15 6h6v6"/></svg></div>
         <h3>分級加班費</h3>
         <p>平日（1.34／1.67）、休息日、國定假日、例假日分級費率，並支援加班換補休。</p>
       </div>
       <div class="card amber">
-        <div class="ico">🚗</div>
+        <div class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13.5l1.9-5.2A2 2 0 0 1 6.8 7h10.4a2 2 0 0 1 1.9 1.3L21 13.5V18H3z"/><path d="M6 18v2M18 18v2"/><circle cx="7.5" cy="14" r="1"/><circle cx="16.5" cy="14" r="1"/></svg></div>
         <h3>補貼與扣款</h3>
         <p>勞健保、餐費補貼、司機補貼（每月固定或逐趟申請擇一）、生日津貼、預支薪資扣款，全部自動帶入。</p>
       </div>
@@ -272,28 +272,19 @@
   <section>
     <div class="sec-head"><h2>系統規格</h2></div>
     <div class="rule"></div>
-    <table class="spec">
-      <tr><th>佈署方式</th><td>雲端主機，全站 HTTPS 加密，免自建機房</td></tr>
-      <tr><th>使用端點</th><td>LINE 官方帳號　·　響應式管理後台　·　手機 App（JWT API）</td></tr>
-      <tr><th>定位驗證</th><td>GPS 座標比對　＋　公司 WiFi 白名單</td></tr>
-      <tr><th>語言介面</th><td>繁體中文・English・日本語・Tiếng Việt・ไทย</td></tr>
-      <tr><th>資料與安全</th><td>PostgreSQL 資料庫　·　WebAuthn 生物辨識登入　·　操作稽核日誌</td></tr>
-    </table>
+    <div class="spec-wrap">
+      <table class="spec">
+        <tr><th>佈署方式</th><td>雲端主機，全站 HTTPS 加密，免自建機房</td></tr>
+        <tr><th>使用端點</th><td>LINE 官方帳號　·　響應式管理後台　·　手機 App（JWT API）</td></tr>
+        <tr><th>定位驗證</th><td>GPS 座標比對　＋　公司 WiFi 白名單</td></tr>
+        <tr><th>語言介面</th><td>繁體中文・English・日本語・Tiếng Việt・ไทย</td></tr>
+        <tr><th>資料與安全</th><td>PostgreSQL 資料庫　·　WebAuthn 生物辨識登入　·　操作稽核日誌</td></tr>
+      </table>
+    </div>
   </section>
 
-  <!-- CTA -->
-  <div class="cta">
-    <h2>想看實際運作？</h2>
-    <p>加入 LINE 官方帳號即可體驗打卡與申請流程；管理後台可另約線上導覽。</p>
-    <div class="links">
-      <div><span>管理後台</span><a href="https://kefan.crownai.ink">kefan.crownai.ink</a></div>
-      <div><span>LINE 官方帳號</span><b>GAS 出勤</b></div>
-      <div><span>提供單位</span><b>可凡企業社</b></div>
-    </div>
-  </div>
-
   <p class="foot">
-    <b>可凡出勤・排班・薪資管理系統</b>　—　為多門市服務業設計的出勤與人事一站式解決方案。<br>
+    <b>出勤・排班・薪資管理系統</b>　—　為多門市服務業設計的出勤與人事一站式解決方案。<br>
     本頁為系統功能介紹，實際模組與費率可依貴公司需求調整。
   </p>
 

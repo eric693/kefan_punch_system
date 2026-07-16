@@ -1,5 +1,5 @@
 // 可凡 PWA service worker — 供後台與員工兩套可安裝為 App
-const CACHE = 'kefan-pwa-v1';
+const CACHE = 'kefan-pwa-v2';
 const ASSETS = [
   '/static/pwa/admin-192.png', '/static/pwa/admin-512.png',
   '/static/pwa/staff-192.png', '/static/pwa/staff-512.png'
@@ -23,8 +23,8 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(
       fetch(req).catch(() => new Response(
         '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
-        '<div style="font-family:-apple-system,\'Noto Sans TC\',sans-serif;color:#5d6f74;text-align:center;margin-top:38vh">' +
-        '<div style="font-size:38px">📴</div><p style="margin-top:10px">目前離線，恢復網路後請重試</p></div>',
+        '<div style="font-family:-apple-system,\'Noto Sans TC\',sans-serif;color:#5d6f74;text-align:center;margin-top:40vh">' +
+        '<p>目前離線，恢復網路後請重試</p></div>',
         { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
       ))
     );
