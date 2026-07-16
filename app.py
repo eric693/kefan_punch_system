@@ -2513,7 +2513,14 @@ def line_punch_webhook():
         try:
             _handle_line_punch_event(event, cfg)
         except Exception as e:
-            print(f"[LINE PUNCH] event handler error: {e}\n{traceback.format_exc()}")
+            print(f"[LINE PUNCH] event handler error: {e}\n{traceback.format_exc()}", flush=True)
+            # 回覆使用者，避免處理失敗時前端完全沒反應（過去加班申請就是這樣靜默失敗）
+            try:
+                _err_uid = (event.get('source') or {}).get('userId')
+                if _err_uid:
+                    _send_line_punch(_err_uid, '系統發生錯誤，您的操作可能未完成，請稍後再試或聯絡管理員。')
+            except Exception:
+                pass
     return 'OK', 200
 
 
