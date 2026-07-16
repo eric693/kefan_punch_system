@@ -348,8 +348,10 @@ def init_db():
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS bank_account TEXT DEFAULT ''",
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS account_holder TEXT DEFAULT ''",
         "ALTER TABLE overtime_requests ADD COLUMN IF NOT EXISTS day_type TEXT DEFAULT 'weekday'",
-        "ALTER TABLE overtime_requests ALTER COLUMN IF EXISTS start_time DROP NOT NULL",
-        "ALTER TABLE overtime_requests ALTER COLUMN IF EXISTS end_time DROP NOT NULL",
+        # 注意：PostgreSQL 不支援 ALTER COLUMN IF EXISTS，寫了會整句語法錯誤而靜默跳過，
+        # 導致 LINE 加班申請（start_time/end_time 傳 NULL）違反 NOT NULL 而失敗。
+        "ALTER TABLE overtime_requests ALTER COLUMN start_time DROP NOT NULL",
+        "ALTER TABLE overtime_requests ALTER COLUMN end_time DROP NOT NULL",
         # 員工個人/保險欄位
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS national_id TEXT DEFAULT ''",
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS gender TEXT DEFAULT ''",
