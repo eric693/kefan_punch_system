@@ -928,6 +928,46 @@ def get_off_counts(conn, month):
 def punch_page():
     return render_template('staff.html')
 
+
+# ═══════════════════════════════════════════════════════════════════
+# 公開系統介紹頁 + PWA（後台／員工兩套皆可安裝為 App）
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/intro')
+def public_intro():
+    """公開系統介紹頁，免登入。"""
+    return render_template('intro.html')
+
+
+def _pwa_file(filename, mimetype):
+    """回傳 static/pwa 下的檔案並指定正確 MIME。"""
+    from flask import Response
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'pwa', filename)
+    with open(path, 'r', encoding='utf-8') as f:
+        body = f.read()
+    resp = Response(body, mimetype=mimetype)
+    resp.headers['Cache-Control'] = 'no-cache'
+    return resp
+
+
+@app.route('/sw.js')
+def pwa_service_worker():
+    # 置於網站根目錄，scope 才能涵蓋 /admin 與 /staff
+    resp = _pwa_file('sw.js', 'application/javascript')
+    resp.headers['Service-Worker-Allowed'] = '/'
+    return resp
+
+
+@app.route('/manifest-admin.webmanifest')
+def pwa_manifest_admin():
+    return _pwa_file('manifest-admin.webmanifest', 'application/manifest+json')
+
+
+@app.route('/manifest-staff.webmanifest')
+def pwa_manifest_staff():
+    return _pwa_file('manifest-staff.webmanifest', 'application/manifest+json')
+
+
 # ── Employee Session ──────────────────────────────────────────────
 
 @app.route('/api/punch/login', methods=['POST'])
