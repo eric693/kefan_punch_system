@@ -490,7 +490,8 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_punch_records_staff_at       ON punch_records(staff_id, punched_at)",
         "CREATE INDEX IF NOT EXISTS idx_punch_records_punched_at     ON punch_records(punched_at)",
         "CREATE INDEX IF NOT EXISTS idx_punch_records_active         ON punch_records(deleted_at) WHERE deleted_at IS NULL",
-        "CREATE INDEX IF NOT EXISTS idx_punch_records_type_date      ON punch_records(punch_type, (punched_at AT TIME ZONE 'Asia/Taipei')::date) WHERE deleted_at IS NULL",
+        # 運算式索引需再包一層括號，否則 (...)::date 會被當成欄位清單括號而語法錯誤
+        "CREATE INDEX IF NOT EXISTS idx_punch_records_type_date      ON punch_records(punch_type, ((punched_at AT TIME ZONE 'Asia/Taipei')::date)) WHERE deleted_at IS NULL",
         "CREATE INDEX IF NOT EXISTS idx_shift_assignments_staff_date  ON shift_assignments(staff_id, shift_date)",
         "CREATE INDEX IF NOT EXISTS idx_shift_assignments_date        ON shift_assignments(shift_date)",
         "CREATE INDEX IF NOT EXISTS idx_leave_requests_staff         ON leave_requests(staff_id, status, start_date)",
@@ -508,7 +509,8 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_salary_records_staff_month   ON salary_records(staff_id, month)",
         "CREATE INDEX IF NOT EXISTS idx_salary_records_month         ON salary_records(month)",
         "CREATE INDEX IF NOT EXISTS idx_finance_records_date_type    ON finance_records(record_date, type)",
-        "CREATE INDEX IF NOT EXISTS idx_announcements_status         ON announcements(status, created_at)",
+        # announcements 沒有 status/created_at 欄位，實際欄位為 active/published_at
+        "CREATE INDEX IF NOT EXISTS idx_announcements_status         ON announcements(active, published_at)",
         "CREATE INDEX IF NOT EXISTS idx_public_holidays_date         ON public_holidays(date)",
         # 每日補貼（餐費、司機補貼）
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS meal_allowance   NUMERIC(12,2) DEFAULT 0",
