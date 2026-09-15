@@ -2156,11 +2156,26 @@ async function loadMyPayslip() {
   }
 }
 
+function psMoney(v){ v=Number(v||0); return Math.abs(v)<0.5?'－':v.toLocaleString('zh-TW',{maximumFractionDigits:0}); }
+function psBlockRows(rows){
+  return rows.map(r=>`
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:7px 0;border-bottom:1px solid #f0f2f8;font-size:13px">
+      <span>${esc(r.name)}${r.note?` <span style="font-size:10px;color:var(--muted)">${esc(r.note)}</span>`:''}</span>
+      <span style="font-family:'DM Mono',monospace;font-weight:600;white-space:nowrap">${psMoney(r.amount)}</span>
+    </div>`).join('') || `<div style="padding:7px 0;font-size:12px;color:var(--muted)">—</div>`;
+}
+function psTotalRow(label,val,bg,color){
+  return `<div style="display:flex;justify-content:space-between;padding:8px 10px;margin-top:6px;background:${bg};border-radius:6px;font-weight:700;font-size:13px">
+    <span>${esc(label)}</span><span style="font-family:'DM Mono',monospace;color:${color||'var(--navy)'}">${psMoney(val)}</span></div>`;
+}
+
 function renderPayslip(data, wrap) {
+  const isHourly = data.salary_type === 'hourly';
+  const vm = data.payslip;
+  if (vm) { renderPayslipThreeBlock(data, vm, wrap); return; }
   const items      = data.items || [];
   const allowItems = items.filter(it => it.type === 'allowance');
   const deductItems= items.filter(it => it.type === 'deduction');
-  const isHourly   = data.salary_type === 'hourly';
 
   const attendStr = isHourly
     ? `${staffT('payslip.actual_hours_pfx')} <strong>${data.actual_work_hours}h</strong> ${staffT('payslip.hourly_rate_sfx')}${fmtNum(data.hourly_rate)}`
@@ -2256,6 +2271,95 @@ function renderPayslip(data, wrap) {
             <td colspan="4" style="padding:8px 12px">${staffT('payslip.monthly_total')}</td>
             <td style="padding:8px 12px;text-align:right;font-family:'DM Mono',monospace;color:var(--accent)">${data.actual_work_hours}h</td>
           </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>` : ''}`;
+
+  wrap.innerHTML = html;
+}
+
+function renderPayslipThreeBlock(data, vm, wrap) {
+  const isHourly = data.salary_type === 'hourly';
+  const stypeLabel = {monthly:'月薪制',hourly:'時薪制',daily:'日薪制'}[data.salary_type] || '月薪制';
+  const att = vm.attendance || {};
+  const ls  = att.leave_summary || [];
+  const an  = att.annual;
+  const leaveTxt = ls.length ? ls.map(l=>`${esc(l.name)} ${l.hours} 小時`).join('、') : '無';
+
+  let html = `
+  <div style="background:#fff;border-radius:12px;border:1.5px solid var(--border);overflow:hidden;margin-bottom:14px">
+    <div style="background:var(--navy);padding:14px 18px;color:#fff;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div>
+        <div style="font-size:15px;font-weight:700">${(data.month||'').replace('-','/')} 薪資明細表</div>
+        <div style="font-size:12px;opacity:.75;margin-top:3px">${esc(data.staff_name||'')}　${stypeLabel}${data.employee_code?`　員工編號 ${esc(String(data.employee_code))}`:''}</div>
+      </div>
+      <div style="background:#FFF2CC;color:#5b4a00;border-radius:8px;padding:6px 14px;text-align:center;min-width:120px">
+        <div style="font-size:10px;opacity:.8">本月銀行轉帳</div>
+        <div style="font-family:'DM Mono',monospace;font-size:18px;font-weight:700">${psMoney(vm.final)}</div>
+      </div>
+    </div>
+
+    <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <div style="font-size:11px;font-weight:700;color:var(--navy);background:var(--bg);padding:6px 10px;border-radius:6px;margin-bottom:8px">第一區塊｜勞基法法定工資項目</div>
+      ${psBlockRows(vm.block1)}
+      ${psTotalRow('（A）應發工資總計', vm.A, '#E2EFDA', 'var(--green)')}
+    </div>
+
+    <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <div style="font-size:11px;font-weight:700;color:var(--navy);background:var(--bg);padding:6px 10px;border-radius:6px;margin-bottom:8px">第二區塊｜法定代扣項目</div>
+      ${psBlockRows(vm.block2)}
+      ${psTotalRow('（B）法定扣款總計', vm.B, '#FBE4E4', 'var(--red)')}
+      ${psTotalRow('（C）勞動薪資小計 ＝ (A) − (B)', vm.C, '#E2EFDA', 'var(--navy)')}
+    </div>
+
+    <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <div style="font-size:11px;font-weight:700;color:var(--navy);background:var(--bg);padding:6px 10px;border-radius:6px;margin-bottom:8px">第三區塊｜非工資給付與民事約定代扣項目</div>
+      ${psBlockRows((vm.block3||[]).map(b=>({name:b.name, amount:b.sign*b.amount})))}
+      ${psTotalRow('第三區塊合計', vm.block3_total, '#EAEFF7', 'var(--navy)')}
+    </div>
+
+    <div style="padding:12px 16px;background:var(--bg);border-bottom:1px solid var(--border);font-size:12px;line-height:1.7">
+      <div style="font-weight:700;color:var(--navy);margin-bottom:4px">本月出勤與特休資訊</div>
+      <div><strong>本月請假紀錄：</strong>${leaveTxt}</div>
+      ${an?`<div><strong>特休動態：</strong>年度可用 ${an.total_hours} 小時（${an.total_days} 天）｜本月已休 ${an.month_used_hours}｜累計已休 ${an.used_hours}｜剩餘 ${an.remain_hours} 小時（${an.remain_days} 天）</div>`:''}
+    </div>
+
+    <div style="padding:14px 18px;background:var(--navy);color:#fff;display:flex;justify-content:space-between;align-items:center">
+      <span style="font-size:13px;font-weight:700">最終銀行總轉帳總額 ＝ (C) ＋ 第三區塊合計</span>
+      <span style="font-family:'DM Mono',monospace;font-size:20px;font-weight:700">$${psMoney(vm.final)}</span>
+    </div>
+
+    <div style="padding:10px 16px;background:#fff;border-top:1px solid var(--border);font-size:12px;color:var(--muted);display:flex;justify-content:space-between;align-items:center">
+      <span>狀態：<strong style="color:${data.status==='confirmed'?'var(--green)':'var(--muted)'}">${data.status==='confirmed'?'已確認':'草稿'}</strong></span>
+      <div style="display:flex;gap:8px;align-items:center">
+        ${data.confirmed_by ? `<span>確認人：${esc(data.confirmed_by)}</span>` : ''}
+        ${data.id ? `<button onclick="window.open('/api/salary/records/'+data.id+'/pdf','_blank')"
+          style="padding:4px 12px;background:var(--navy);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer">列印 PDF</button>` : ''}
+      </div>
+    </div>
+  </div>
+
+  ${isHourly && data.punch_details && data.punch_details.length ? `
+  <div style="background:#fff;border-radius:12px;border:1.5px solid var(--border);overflow:hidden;margin-bottom:14px">
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-size:12px;font-weight:700;color:var(--accent)">${staffT('payslip.hours_detail')}</div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="background:var(--bg)">
+          <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border)">${staffT('payslip.col_date')}</th>
+          <th style="padding:8px 12px;text-align:center;border-bottom:1px solid var(--border)">${staffT('payslip.col_in')}</th>
+          <th style="padding:8px 12px;text-align:center;border-bottom:1px solid var(--border)">${staffT('payslip.col_out')}</th>
+          <th style="padding:8px 12px;text-align:center;border-bottom:1px solid var(--border)">${staffT('payslip.col_break')}</th>
+          <th style="padding:8px 12px;text-align:right;border-bottom:1px solid var(--border)">${staffT('payslip.col_hours')}</th>
+        </tr></thead>
+        <tbody>
+          ${data.punch_details.map(pd => `<tr style="border-bottom:1px solid #f0f2f8">
+            <td style="padding:6px 12px;font-family:'DM Mono',monospace">${pd.date.slice(5)}</td>
+            <td style="padding:6px 12px;text-align:center;color:var(--green)">${pd.clock_in}</td>
+            <td style="padding:6px 12px;text-align:center;color:var(--red)">${pd.clock_out}</td>
+            <td style="padding:6px 12px;text-align:center;color:var(--muted)">${pd.break_mins ? pd.break_mins + 'min' : '—'}</td>
+            <td style="padding:6px 12px;text-align:right;font-family:'DM Mono',monospace;font-weight:600">${pd.net_hours}h</td>
+          </tr>`).join('')}
         </tbody>
       </table>
     </div>

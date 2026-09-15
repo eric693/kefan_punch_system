@@ -147,6 +147,8 @@ def init_db():
                     daily_hours     NUMERIC(4,1) DEFAULT 8,
                     ot_rate1        NUMERIC(4,2) DEFAULT 1.34,
                     ot_rate2        NUMERIC(4,2) DEFAULT 1.67,
+                    ot_rate_holiday NUMERIC(4,2) DEFAULT 2.00,
+                    ot_rate_special NUMERIC(4,2) DEFAULT 2.00,
                     salary_type     TEXT DEFAULT 'monthly',
                     hourly_rate     NUMERIC(12,2) DEFAULT 0,
                     vacation_quota  INT DEFAULT NULL,
@@ -339,6 +341,8 @@ def init_db():
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS daily_hours NUMERIC(4,1) DEFAULT 8",
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS ot_rate1 NUMERIC(4,2) DEFAULT 1.34",
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS ot_rate2 NUMERIC(4,2) DEFAULT 1.67",
+        "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS ot_rate_holiday NUMERIC(4,2) DEFAULT 2.00",
+        "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS ot_rate_special NUMERIC(4,2) DEFAULT 2.00",
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS salary_type TEXT DEFAULT 'monthly'",
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS hourly_rate NUMERIC(12,2) DEFAULT 0",
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS vacation_quota INT DEFAULT NULL",
@@ -4386,6 +4390,38 @@ def _calc_ot_pay(staff_row, ot_hours, day_type='weekday'):
     return pay, base_hourly
 
 
+def _recompute_approved_ot_pay(conn, sid):
+    """員工薪資（底薪／時薪／加班倍率）變動後，重算其所有已核准加班費（cash／both）。
+    加班費原本是核准當下用「當時薪資」算好的快照，薪資事後變動不會自動更新，
+    這裡依現行薪資重算，並把受影響月份的薪資單重設為草稿。回傳更新筆數。"""
+    staff = conn.execute("""
+        SELECT base_salary, hourly_rate, daily_hours,
+               ot_rate1, ot_rate2, ot_rate_holiday, ot_rate_special, salary_type
+        FROM punch_staff WHERE id=%s
+    """, (sid,)).fetchone()
+    if not staff:
+        return 0
+    rows = conn.execute("""
+        SELECT id, request_date, day_type, ot_hours, ot_pay
+        FROM overtime_requests
+        WHERE staff_id=%s AND status='approved' AND pay_mode IN ('cash','both')
+    """, (sid,)).fetchall()
+    changed = 0
+    months = set()
+    for r in rows:
+        new_pay, _ = _calc_ot_pay(staff, float(r['ot_hours'] or 0), r.get('day_type') or 'weekday')
+        if round(float(r['ot_pay'] or 0), 0) != round(float(new_pay), 0):
+            conn.execute("UPDATE overtime_requests SET ot_pay=%s WHERE id=%s", (new_pay, r['id']))
+            months.add(str(r['request_date'])[:7])
+            changed += 1
+    for mon in months:
+        conn.execute("""
+            UPDATE salary_records SET status='draft', updated_at=NOW()
+            WHERE staff_id=%s AND month=%s AND status IN ('confirmed','draft')
+        """, (sid, mon))
+    return changed
+
+
 @app.route('/api/overtime/requests/<int:rid>', methods=['PUT'])
 @login_required
 def api_ot_review(rid):
@@ -5571,6 +5607,7 @@ def init_salary_db():
             id          SERIAL PRIMARY KEY,
             name        TEXT NOT NULL,
             item_type   TEXT NOT NULL DEFAULT 'allowance',
+            category    TEXT NOT NULL DEFAULT 'statutory',
             formula     TEXT DEFAULT '',
             amount      NUMERIC(12,2) DEFAULT 0,
             description TEXT DEFAULT '',
@@ -5579,6 +5616,8 @@ def init_salary_db():
             sort_order  INT DEFAULT 0,
             created_at  TIMESTAMPTZ DEFAULT NOW()
         )""",
+        # category: 'statutory'（勞基法法定工資/法定代扣，第一、二區塊）| 'non_wage'（非工資給付與民事約定代扣，第三區塊）
+        "ALTER TABLE salary_items ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'statutory'",
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS salary_item_ids JSONB DEFAULT NULL",
         "ALTER TABLE punch_staff ADD COLUMN IF NOT EXISTS salary_item_overrides JSONB DEFAULT NULL",
         "ALTER TABLE salary_records ADD COLUMN IF NOT EXISTS income_tax_withheld NUMERIC(12,2) DEFAULT 0",
@@ -5588,6 +5627,8 @@ def init_salary_db():
         "ALTER TABLE salary_records ADD COLUMN IF NOT EXISTS hourly_base_pay NUMERIC(12,2) DEFAULT 0",
         "ALTER TABLE salary_records ADD COLUMN IF NOT EXISTS actual_work_hours NUMERIC(7,2) DEFAULT 0",
         "ALTER TABLE salary_records ADD COLUMN IF NOT EXISTS punch_details JSONB DEFAULT '[]'",
+        # 移除互相抵銷的勞退提撥（雇主負擔，不應出現在員工薪資單；僅清除自動種子產生的冗餘兩筆）
+        "DELETE FROM salary_items WHERE name IN ('勞退6%','勞退提撥6%') AND formula='base_salary*0.06+service_years*1000*0.06'",
         """CREATE TABLE IF NOT EXISTS salary_records (
             id              SERIAL PRIMARY KEY,
             staff_id        INT REFERENCES punch_staff(id) ON DELETE CASCADE,
@@ -5657,11 +5698,10 @@ def init_salary_db():
         ('全勤獎金',    'allowance', '',                                0,    '#c8a96e', 3),
         ('獎金',        'allowance', '',                                0,    '#8b5cf6', 4),
         ('生日禮金',    'allowance', '',                                1000, '#e05c8a', 5),
-        ('勞退6%',      'allowance', 'base_salary*0.06+service_years*1000*0.06', 0, '#4a7bda', 6),
         ('病/事/假',    'deduction', '',                                0,    '#8892a4', 7),
         ('勞保費',      'deduction', 'insured_salary*0.125*0.2',       0,    '#d64242', 8),
         ('健保費',      'deduction', 'insured_salary*0.0517*0.3',      0,    '#e07b2a', 9),
-        ('勞退提撥6%',  'deduction', 'base_salary*0.06+service_years*1000*0.06', 0, '#4a7bda', 10),
+        # 勞退提撥（雇主負擔 6%）依勞基法不從員工薪資扣除，故不列入薪資項目
     ]
     try:
         with get_db() as conn:
@@ -5674,6 +5714,33 @@ def init_salary_db():
                     """, (name, itype, formula, amount, color, sort))
     except Exception as e:
         print(f"[salary_seed] {e}")
+
+    # 依薪資單三區塊版面，補齊法定／非工資項目（idempotent，依名稱判斷）
+    # (name, item_type, category, sort_order)
+    payslip_items = [
+        # 第一區塊：勞基法法定工資項目（statutory / 加項）
+        ('特休未休工資',          'allowance', 'statutory', 6),
+        # 第二區塊：法定代扣項目（statutory / 扣項）
+        ('因故未提供勞務扣款',     'deduction', 'statutory', 10),
+        ('員工自提／其他法定扣款', 'deduction', 'statutory', 11),
+        # 第三區塊：非工資給付與民事約定代扣項目（non_wage）
+        ('民事證照授權費',        'allowance', 'non_wage', 20),
+        ('代發公務差旅核銷',      'allowance', 'non_wage', 21),
+        ('動態專案達成激勵金',    'allowance', 'non_wage', 22),
+        ('公司營運盈餘紅利',      'allowance', 'non_wage', 23),
+        ('其他非工資給付',        'allowance', 'non_wage', 24),
+        ('宿舍水電費（代收代付）', 'deduction', 'non_wage', 25),
+    ]
+    try:
+        with get_db() as conn:
+            for name, itype, cat, sort in payslip_items:
+                conn.execute("""
+                    INSERT INTO salary_items (name, item_type, category, formula, amount, color, sort_order)
+                    SELECT %s, %s, %s, '', 0, '#64748b', %s
+                    WHERE NOT EXISTS (SELECT 1 FROM salary_items WHERE name=%s)
+                """, (name, itype, cat, sort, name))
+    except Exception as e:
+        print(f"[salary_seed_payslip] {e}")
 
 init_salary_db()
 
@@ -5731,7 +5798,7 @@ def _eval_formula(formula, base_salary, insured_salary, service_years):
     _ALLOWED_NODES = (
         _ast.Expression, _ast.BinOp, _ast.UnaryOp, _ast.Constant,
         _ast.Add, _ast.Sub, _ast.Mult, _ast.Div, _ast.FloorDiv,
-        _ast.Mod, _ast.Pow, _ast.USub, _ast.UAdd, _ast.Name,
+        _ast.Mod, _ast.Pow, _ast.USub, _ast.UAdd, _ast.Name, _ast.Load,
     )
     _vars = {
         'base_salary':    float(base_salary or 0),
@@ -5808,6 +5875,28 @@ def _clip_leave_to_month(ls, le, month_start, month_end_exclusive, scheduled_dat
             count += 1.0
         cur += _td(days=1)
     return count
+
+def _present_day_set(typed_punches):
+    """以「進場日」歸班次，回傳有出勤活動的日期集合（'YYYY-MM-DD' 字串）。
+
+    跨午夜的下班打卡會歸回進場日（非 in 打卡若在最近一次 in 的 24h 內 → 歸該 in 當天），
+    因此夜班隔天凌晨的下班不會讓隔天被誤計為「有出勤」。供缺勤判定使用。
+    typed_punches: 可迭代 (punch_type, tz-aware datetime)。
+    """
+    present = set()
+    last_in_ds = None
+    last_in_dt = None
+    for ptype, dt in sorted(typed_punches, key=lambda x: x[1]):
+        ds = dt.strftime('%Y-%m-%d')
+        if ptype == 'in':
+            last_in_ds, last_in_dt, target = ds, dt, ds
+        elif last_in_ds and last_in_dt and (dt - last_in_dt).total_seconds() <= 86400:
+            target = last_in_ds
+        else:
+            target = ds
+        present.add(target)
+    return present
+
 
 def _calc_punch_hours(conn, staff_id, month):
     """
@@ -5964,8 +6053,20 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
     hourly_rate    = float(staff.get('hourly_rate')    or 0)
     insured_salary = float(staff.get('insured_salary') or base_salary)
     daily_hours    = float(staff.get('daily_hours')    or 8)
-    service_years  = _calc_service_years(staff.get('hire_date'))
-    meal_allowance = float(staff.get('meal_allowance') or 0)
+    # 年資加給以「滿一年」為單位（取整數年），未滿一年不計
+    service_years  = float(int(_calc_service_years(staff.get('hire_date'))))
+    meal_allowance   = float(staff.get('meal_allowance')   or 0)
+    driver_allowance = float(staff.get('driver_allowance') or 0)
+
+    # 生日當月判斷（名稱含「生日」的薪資項目僅於員工生日當月發放）
+    _birth = staff.get('birth_date')
+    is_birthday_month = False
+    if _birth:
+        try:
+            _bm = _birth.month if hasattr(_birth, 'month') else int(str(_birth)[5:7])
+            is_birthday_month = (_bm == m)
+        except Exception:
+            is_birthday_month = False
 
     # ── 已核准加班費（必須先取得，時薪制計算本薪時需要 total_ot_hours）──
     if batch_ctx is not None:
@@ -6047,8 +6148,11 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
 
     # ── 組裝薪資項目 ────────────────────────────────────────
     items           = []
-    allowance_total = 0.0
-    deduction_total = 0.0
+    # 月薪制是否有納入「本薪」類項目；未納入時不做缺勤扣款，避免只扣不發變成負數
+    has_base_pay_item = (salary_type != 'monthly')
+    allowance_total = 0.0   # (A) 法定應發工資（statutory allowance）
+    deduction_total = 0.0   # (B) 法定代扣（statutory deduction）
+    nonwage_total   = 0.0   # 第三區塊合計（非工資給付 - 民事約定代扣）
     # 員工個人金額覆寫 {str(item_id): amount}
     _overrides = staff.get('salary_item_overrides') or {}
     if isinstance(_overrides, str):
@@ -6061,6 +6165,21 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
         if key in _overrides and _overrides[key] is not None and _overrides[key] != '':
             return float(_overrides[key]), True   # (amount, is_overridden)
         return calculated_amt, False
+
+    # ── 司機補貼：本月已核准的 LINE 逐趟申請（先載入，供去重判斷）──────────────
+    # 規則：本月「有」逐趟申請核准 → 採逐趟金額；「沒有」→ 給固定津貼當底，
+    # 兩者擇一，不重複給。
+    _drv_ms, _drv_me = _month_range(month)
+    if batch_ctx is not None:
+        _drv_pertrip_rows = batch_ctx.get('driver_allowances', {}).get(staff['id'], [])
+    else:
+        _drv_pertrip_rows = [dict(r) for r in conn.execute("""
+            SELECT id, amount, apply_date, direction
+            FROM driver_allowance_requests
+            WHERE staff_id=%s AND status='approved'
+              AND apply_date >= %s::date AND apply_date < %s::date
+        """, (staff['id'], _drv_ms, _drv_me)).fetchall()]
+    _has_pertrip_drv = len(_drv_pertrip_rows) > 0
 
     if salary_type == 'hourly':
         # 時薪制：第一筆項目是「本薪（工時計算）」
@@ -6113,7 +6232,7 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
                 SELECT * FROM salary_items
                 WHERE active=TRUE AND id IN ({placeholders})
                   AND item_type='deduction'
-                  AND (formula LIKE '%insured_salary%' OR formula LIKE '%base_salary%')
+                  AND (formula LIKE '%%insured_salary%%' OR formula LIKE '%%base_salary%%')
                 ORDER BY sort_order, id
             """, staff_item_ids).fetchall()
         else:
@@ -6169,7 +6288,7 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
                 SELECT * FROM salary_items
                 WHERE active=TRUE AND id IN ({placeholders})
                   AND item_type='deduction'
-                  AND (formula LIKE '%insured_salary%' OR formula LIKE '%base_salary%')
+                  AND (formula LIKE '%%insured_salary%%' OR formula LIKE '%%base_salary%%')
                 ORDER BY sort_order, id
             """, staff_item_ids).fetchall()
         else:
@@ -6213,33 +6332,38 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
                 "SELECT * FROM salary_items WHERE active=TRUE ORDER BY sort_order, id"
             ).fetchall()
         for it in items_rows:
-            # 生日相關津貼：只在員工生日當月發放
-            if '生日' in (it['name'] or ''):
-                birth_date = staff.get('birth_date')
-                if birth_date:
-                    try:
-                        birth_month = int(str(birth_date)[5:7])
-                        if birth_month != m:
-                            continue
-                    except Exception:
-                        continue
-                else:
-                    continue  # 無生日資料則不發放
             formula  = it['formula'] or ''
+            _is_birthday_item = '生日' in (it['name'] or '')
+            if _is_birthday_item and not is_birthday_month:
+                continue
+            # 司機補貼固定津貼：本月有逐趟申請核准則略過固定，改採逐趟（見下方），避免重複
+            if '司機補貼' in (it['name'] or '') and _has_pertrip_drv:
+                continue
             calc_amt = float(it['amount'] or 0)
             if formula:
                 calc_amt = _eval_formula(formula, base_salary, insured_salary, service_years)
             amt, overridden = _apply_override(it['id'], calc_amt)
             note = f'手動設定 ${amt}' if overridden else formula
+            if _is_birthday_item and not overridden:
+                note = '生日當月發放'
+            _cat = (it.get('category') or 'statutory') if isinstance(it, dict) else (it['category'] if 'category' in it.keys() else 'statutory')
             items.append({
                 'id':        it['id'],
                 'name':      it['name'],
                 'type':      it['item_type'],
+                'category':  _cat,
                 'amount':    round(amt, 2),
                 'formula':   formula,
                 'calc_note': note,
             })
-            if it['item_type'] == 'allowance':
+            if _cat == 'non_wage':
+                # 第三區塊：加項計正、扣項計負，最後加回最終轉帳，不影響 (A)/(B)
+                nonwage_total += amt if it['item_type'] == 'allowance' else -amt
+            elif it['item_type'] == 'allowance':
+                # 需實際算出金額才算數：沒勾本薪、底薪欄位空白、個人金額覆寫成 0
+                # 三種情況都視為「沒有底薪可發」，不做缺勤／請假扣款
+                if amt > 0 and ('本薪' in (it['name'] or '') or 'base_salary' in formula):
+                    has_base_pay_item = True
                 allowance_total += amt
             else:
                 deduction_total += amt
@@ -6256,7 +6380,7 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
     # ── 請假扣款（月薪制） / 請假薪資補加（日薪制、時薪制）─────────────
     # 月薪制：底薪固定，請假才扣；日薪/時薪制：底薪按打卡計算，請假日沒打卡即無薪，
     # 有薪假應補加薪資而非扣款（否則會雙重扣）。
-    if salary_type == 'monthly':
+    if salary_type == 'monthly' and has_base_pay_item:
         if unpaid_days > 0 and daily_wage > 0:
             leave_names = '、'.join(set(
                 r['leave_name'] for r in leave_rows if float(r['pay_rate']) == 0
@@ -6279,7 +6403,7 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
                     'calc_note': f'{_hdays}天 × 日薪${round(daily_wage, 0)} × {_dr}',
                 })
                 deduction_total += deduct
-    else:
+    elif salary_type != 'monthly':
         # 日薪制 / 時薪制：有薪假補加，無薪假不扣（底薪已按打卡天數/工時計算，請假日本無薪）
         _full_leave_days = leave_days - unpaid_days - sum(d for d, _, _ in _half_entries)
         if _full_leave_days > 0 and daily_wage > 0:
@@ -6310,14 +6434,22 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
             leave_date_set = batch_ctx['leave_date_sets'].get(staff['id'], set())
         else:
             _ps, _pe = _month_range(month)
+            # 視窗前後各擴 1 天，讓跨月邊界的夜班可正確歸到進場日
+            _ps_ext = (_d5.fromisoformat(_ps) - _td5(days=1)).isoformat()
+            _pe_ext = (_d5.fromisoformat(_pe) + _td5(days=1)).isoformat()
             punch_rows = conn.execute("""
-                SELECT DISTINCT (punched_at AT TIME ZONE 'Asia/Taipei')::date as work_date
+                SELECT punch_type, punched_at
                 FROM punch_records WHERE staff_id=%s
                   AND punched_at AT TIME ZONE 'Asia/Taipei' >= %s::date
                   AND punched_at AT TIME ZONE 'Asia/Taipei' < %s::date
                   AND deleted_at IS NULL
-            """, (staff['id'], _ps, _pe)).fetchall()
-            punched_dates = {r['work_date'].isoformat() if hasattr(r['work_date'], 'isoformat') else str(r['work_date']) for r in punch_rows}
+                ORDER BY punched_at ASC
+            """, (staff['id'], _ps_ext, _pe_ext)).fetchall()
+            punched_dates = _present_day_set(
+                (r['punch_type'],
+                 (r['punched_at'].replace(tzinfo=_tz5.utc) if r['punched_at'].tzinfo is None else r['punched_at']).astimezone(_TW5))
+                for r in punch_rows
+            )
             # 已核准請假日期集合（含跨月假別）
             leave_date_rows = conn.execute("""
                 SELECT start_date, end_date FROM leave_requests
@@ -6341,7 +6473,8 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
                and _d5.fromisoformat(ds) <= _absent_cutoff
         )
         absent_days = len(absent_date_list)
-        if absent_days > 0:
+        # 沒有底薪可發時仍統計缺勤天數（出勤欄位才正確），但不扣款
+        if absent_days > 0 and has_base_pay_item:
             deduct = round(daily_wage * absent_days, 2)
             sample = '、'.join(absent_date_list[:3]) + ('等' if absent_days > 3 else '')
             items.append({
@@ -6374,65 +6507,67 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
         })
         deduction_total += adv_amt
 
-    # ── 司機補貼（申請核准 + 每日固定，兩者依日期去重）────────────────────
-    _ms_da, _me_da = _month_range(month)
-    if batch_ctx is not None:
-        drvr_rows = batch_ctx.get('driver_allowances', {}).get(staff['id'], [])
-    else:
-        drvr_rows = conn.execute("""
-            SELECT id, amount, apply_date, direction
-            FROM driver_allowance_requests
-            WHERE staff_id=%s AND status='approved'
-              AND apply_date >= %s::date AND apply_date < %s::date
-        """, (staff['id'], _ms_da, _me_da)).fetchall()
-        drvr_rows = [dict(r) for r in drvr_rows]
-    # 已核准申請的日期集合（每日固定補貼遇同一天則略過，避免重複計算）
-    _drvr_req_dates = set()
-    for _dr in drvr_rows:
-        _ad = _dr['apply_date']
-        _drvr_req_dates.add(_ad.isoformat() if hasattr(_ad, 'isoformat') else str(_ad))
-    if drvr_rows:
-        _drvr_total = sum(float(r['amount']) for r in drvr_rows)
-        _drvr_cnt = len(drvr_rows)
+    # ── 每日司機補貼（員工資料固定設定 × 實際出勤天數）────────────────────
+    if driver_allowance > 0:
+        if salary_type in ('hourly', 'daily'):
+            _drv_days = punch_work_days
+        else:
+            _drv_days = max(0, total_work_days - leave_days - absent_days)
+        if _drv_days > 0:
+            _drv_auto_total = round(driver_allowance * _drv_days, 2)
+            items.append({
+                'id': 'driver_allowance_auto',
+                'name': '司機補貼（固定）',
+                'type': 'allowance',
+                'amount': _drv_auto_total,
+                'formula': '',
+                'calc_note': f'{int(_drv_days)}天 × ${int(driver_allowance)}',
+            })
+            allowance_total += _drv_auto_total
+
+    # ── 司機補貼（LINE 逐趟申請核准）─────────────────────────────────
+    # 本月有逐趟申請核准 → 採逐趟金額（固定津貼已在上方略過，不重複給）
+    if _drv_pertrip_rows:
+        _drvr_total = sum(float(r['amount']) for r in _drv_pertrip_rows)
+        _drvr_cnt = len(_drv_pertrip_rows)
         items.append({
             'id': 'driver_allowance_requests',
             'name': '司機補貼（申請）',
             'type': 'allowance',
             'amount': round(_drvr_total, 2),
             'formula': '',
-            'calc_note': f'{_drvr_cnt}筆核准',
+            'calc_note': f'{_drvr_cnt}筆逐趟核准合計',
         })
         allowance_total += _drvr_total
 
-    # 每日固定司機補貼（員工資料欄位）：實際出勤日 × 金額，排除已申請核准的日期
-    _driver_per_day = float(staff.get('driver_allowance') or 0)
-    if _driver_per_day > 0:
-        if salary_type in ('hourly', 'daily'):
-            _attend_dates = {p['date'] for p in punch_details}
-        elif batch_ctx is not None:
-            _attend_dates = set(batch_ctx['punch_dates'].get(staff['id'], set()))
+    # ── 固定司機補貼（薪資項目）：日薪／時薪制也以固定金額發放 ─────────────────
+    # 月薪制已在上方薪資項目迴圈處理；此處補上日薪／時薪制，使「每人每月固定」一致。
+    # 本月有逐趟申請核准則略過（改採逐趟，避免重複）。
+    if salary_type in ('hourly', 'daily') and not _has_pertrip_drv:
+        _staff_item_ids = staff.get('salary_item_ids')
+        if batch_ctx is not None:
+            _drv_items = [it for it in batch_ctx['salary_items']
+                          if it['item_type'] == 'allowance' and '司機補貼' in (it['name'] or '')]
         else:
-            _dpd_s, _dpd_e = _month_range(month)
-            _dpd_rows = conn.execute("""
-                SELECT DISTINCT (punched_at AT TIME ZONE 'Asia/Taipei')::date as work_date
-                FROM punch_records WHERE staff_id=%s
-                  AND punched_at AT TIME ZONE 'Asia/Taipei' >= %s::date
-                  AND punched_at AT TIME ZONE 'Asia/Taipei' < %s::date
-                  AND deleted_at IS NULL
-            """, (staff['id'], _dpd_s, _dpd_e)).fetchall()
-            _attend_dates = {r['work_date'].isoformat() if hasattr(r['work_date'], 'isoformat') else str(r['work_date']) for r in _dpd_rows}
-        _drvr_day_cnt = len([d for d in _attend_dates if d not in _drvr_req_dates])
-        if _drvr_day_cnt > 0:
-            _drvr_day_total = round(_driver_per_day * _drvr_day_cnt, 2)
+            _drv_items = conn.execute("""
+                SELECT * FROM salary_items
+                WHERE active=TRUE AND item_type='allowance' AND name LIKE '%司機補貼%'
+                ORDER BY sort_order, id
+            """).fetchall()
+        _ids_set = set(_staff_item_ids) if _staff_item_ids else None
+        for _it in _drv_items:
+            if _ids_set is not None and _it['id'] not in _ids_set:
+                continue
+            _formula = _it['formula'] or ''
+            _fixed = (_eval_formula(_formula, base_salary, insured_salary, service_years)
+                      if _formula else float(_it['amount'] or 0))
+            _amt, _ov = _apply_override(_it['id'], _fixed)
             items.append({
-                'id': 'driver_allowance_daily',
-                'name': '司機補貼（每日）',
-                'type': 'allowance',
-                'amount': _drvr_day_total,
-                'formula': '',
-                'calc_note': f'{_drvr_day_cnt}天 × ${int(_driver_per_day)}',
+                'id': _it['id'], 'name': _it['name'], 'type': 'allowance',
+                'amount': round(_amt, 2), 'formula': _formula,
+                'calc_note': f'手動設定 ${_amt}' if _ov else '每月固定',
             })
-            allowance_total += _drvr_day_total
+            allowance_total += _amt
 
     # ── 餐費補貼（每日固定補貼 × 實際出勤天數）────────────────────────
     if meal_allowance > 0:
@@ -6453,12 +6588,26 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
             })
             allowance_total += _meal_total
 
-    net_pay = round(allowance_total - deduction_total, 2)
+    # 內建計算項目（本薪/加班/勞健保/請假扣款/補貼等）一律歸入法定區塊
+    for _it in items:
+        _it.setdefault('category', 'statutory')
+
+    # 最終銀行轉帳 = (A) - (B) + 第三區塊合計
+    net_pay = round(allowance_total - deduction_total + nonwage_total, 2)
+
+    # ── 設定異常提醒 ────────────────────────────────────────
+    warnings = []
+    if not has_base_pay_item:
+        warnings.append('本薪為 0（未勾選本薪項目、底薪未填、或個人金額設為 0），'
+                        '底薪未計入應發，已略過缺勤與請假扣款')
+    if net_pay < 0:
+        warnings.append('實領金額為負數，請檢查薪資項目設定')
 
     return {
         'staff_id':           staff['id'],
         'month':              month,
         'salary_type':        salary_type,
+        'nonwage_total':      round(nonwage_total, 2),
         'base_salary':        base_salary if salary_type in ('monthly', 'daily') else 0,
         'hourly_rate':        hourly_rate if salary_type == 'hourly' else 0,
         'hourly_base_pay':    hourly_base_pay if salary_type == 'hourly' else (daily_base_pay if salary_type == 'daily' else 0),
@@ -6473,6 +6622,7 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
         'allowance_total':    round(allowance_total, 2),
         'deduction_total':    round(deduction_total, 2),
         'net_pay':            net_pay,
+        'warnings':           warnings,
         'items':              items,
         'punch_details':      punch_details,   # 時薪制：每日打卡明細
         'status':             'draft',
@@ -6492,20 +6642,27 @@ def api_my_payslip():
     with get_db() as conn:
         row = conn.execute("""
             SELECT sr.*, ps.name as staff_name, ps.role as staff_role,
-                   ps.employee_code, ps.department, ps.salary_type, ps.hourly_rate
+                   ps.employee_code, ps.department, ps.salary_type, ps.hourly_rate,
+                   ps.hire_date, ps.ot_rate1, ps.ot_rate2, ps.ot_rate_holiday, ps.ot_rate_special
             FROM salary_records sr
             JOIN punch_staff ps ON ps.id = sr.staff_id
             WHERE sr.staff_id = %s AND sr.month = %s
         """, (sid, month)).fetchone()
-    if not row:
-        return jsonify({'error': f'{month} 尚無薪資記錄，請聯絡管理員'}), 404
-    d = salary_record_row(row)
-    d['staff_name']    = row['staff_name']
-    d['staff_role']    = row['staff_role']
-    d['employee_code'] = row['employee_code'] or ''
-    d['department']    = row['department']    or ''
-    d['salary_type']   = row['salary_type']   or 'monthly'
-    d['hourly_rate']   = float(row['hourly_rate'] or 0)
+        if not row:
+            return jsonify({'error': f'{month} 尚無薪資記錄，請聯絡管理員'}), 404
+        d = salary_record_row(row)
+        d['staff_name']    = row['staff_name']
+        d['staff_role']    = row['staff_role']
+        d['employee_code'] = row['employee_code'] or ''
+        d['department']    = row['department']    or ''
+        d['salary_type']   = row['salary_type']   or 'monthly'
+        d['hourly_rate']   = float(row['hourly_rate'] or 0)
+        d['hire_date']     = row['hire_date'].isoformat() if row.get('hire_date') and hasattr(row['hire_date'], 'isoformat') else (row.get('hire_date') or '')
+        # 三區塊薪資單資料模型（員工自助頁渲染用）
+        _vm_rec = dict(d)
+        _vm_rec['ot_rate1'] = row.get('ot_rate1'); _vm_rec['ot_rate2'] = row.get('ot_rate2')
+        _vm_rec['ot_rate_holiday'] = row.get('ot_rate_holiday'); _vm_rec['ot_rate_special'] = row.get('ot_rate_special')
+        d['payslip'] = _payslip_view_model(conn, _vm_rec)
     return jsonify(d)
 
 # ── Salary Items CRUD ─────────────────────────────────────────────
@@ -6523,9 +6680,11 @@ def api_salary_item_create():
     b = request.get_json(force=True)
     with get_db() as conn:
         row = conn.execute("""
-            INSERT INTO salary_items (name, item_type, formula, amount, description, color, sort_order)
-            VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *
-        """, (b['name'], b.get('item_type','allowance'), b.get('formula',''),
+            INSERT INTO salary_items (name, item_type, category, formula, amount, description, color, sort_order)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
+        """, (b['name'], b.get('item_type','allowance'),
+              b.get('category','statutory') if b.get('category') in ('statutory','non_wage') else 'statutory',
+              b.get('formula',''),
               float(b.get('amount',0)), b.get('description',''),
               b.get('color','#4a7bda'), int(b.get('sort_order',0)))).fetchone()
     return jsonify(salary_item_row(row)), 201
@@ -6536,10 +6695,12 @@ def api_salary_item_update(iid):
     b = request.get_json(force=True)
     with get_db() as conn:
         row = conn.execute("""
-            UPDATE salary_items SET name=%s, item_type=%s, formula=%s, amount=%s,
+            UPDATE salary_items SET name=%s, item_type=%s, category=%s, formula=%s, amount=%s,
               description=%s, color=%s, sort_order=%s, active=%s
             WHERE id=%s RETURNING *
-        """, (b['name'], b.get('item_type','allowance'), b.get('formula',''),
+        """, (b['name'], b.get('item_type','allowance'),
+              b.get('category','statutory') if b.get('category') in ('statutory','non_wage') else 'statutory',
+              b.get('formula',''),
               float(b.get('amount',0)), b.get('description',''),
               b.get('color','#4a7bda'), int(b.get('sort_order',0)),
               bool(b.get('active',True)), iid)).fetchone()
@@ -6654,20 +6815,28 @@ def api_salary_generate():
             for _r in _leave_rows_b:
                 _leave_map_b.setdefault(_r['staff_id'], []).append(dict(_r))
 
-            # 5. 全員打卡日期集合（用於缺勤計算）
+            # 5. 全員打卡集合（以「進場日」歸班次，跨午夜下班歸進場日；用於缺勤計算）
+            from datetime import timezone as _tz_batch
+            _TW_b = _tz_batch(_td_batch(hours=8))
+            _ms_ext_b = (_d_batch.fromisoformat(_batch_ms) - _td_batch(days=1)).isoformat()
+            _me_ext_b = (_d_batch.fromisoformat(_batch_me) + _td_batch(days=1)).isoformat()
             _punch_rows_b = conn.execute("""
-                SELECT DISTINCT staff_id,
-                       (punched_at AT TIME ZONE 'Asia/Taipei')::date as work_date
+                SELECT staff_id, punch_type, punched_at
                 FROM punch_records
                 WHERE staff_id = ANY(%s)
                   AND punched_at AT TIME ZONE 'Asia/Taipei' >= %s::date
                   AND punched_at AT TIME ZONE 'Asia/Taipei' < %s::date
                   AND deleted_at IS NULL
-            """, (staff_ids, _batch_ms, _batch_me)).fetchall()
-            _punch_dates_b: dict = {}
+                ORDER BY staff_id, punched_at ASC
+            """, (staff_ids, _ms_ext_b, _me_ext_b)).fetchall()
+            _punch_typed_b: dict = {}
             for _r in _punch_rows_b:
-                _ds = _r['work_date'].isoformat() if hasattr(_r['work_date'], 'isoformat') else str(_r['work_date'])
-                _punch_dates_b.setdefault(_r['staff_id'], set()).add(_ds)
+                _pa = _r['punched_at']
+                if _pa.tzinfo is None:
+                    _pa = _pa.replace(tzinfo=_tz_batch.utc)
+                _punch_typed_b.setdefault(_r['staff_id'], []).append(
+                    (_r['punch_type'], _pa.astimezone(_TW_b)))
+            _punch_dates_b = {sid: _present_day_set(rows) for sid, rows in _punch_typed_b.items()}
 
             # 6. 全員請假日期範圍（用於缺勤判斷，含跨月假別）
             _leave_date_rows_b = conn.execute("""
@@ -7245,7 +7414,7 @@ def api_salary_staff_update(sid):
               employee_code=%s, department=%s, position_title=%s,
               hire_date=%s,
               base_salary=%s, insured_salary=%s, daily_hours=%s,
-              ot_rate1=%s, ot_rate2=%s, salary_type=%s,
+              ot_rate1=%s, ot_rate2=%s, ot_rate_holiday=%s, ot_rate_special=%s, salary_type=%s,
               hourly_rate=%s, vacation_quota=%s, salary_notes=%s,
               salary_item_ids=%s, salary_item_overrides=%s,
               national_id=%s, gender=%s, insurance_type=%s, address=%s,
@@ -7255,6 +7424,7 @@ def api_salary_staff_update(sid):
               _s('hire_date'),
               _f('base_salary'), _f('insured_salary'), _f('daily_hours') or 8,
               _f('ot_rate1') or 1.34, _f('ot_rate2') or 1.67,
+              _f('ot_rate_holiday') or 2.0, _f('ot_rate_special') or 2.0,
               b.get('salary_type','monthly'),
               _f('hourly_rate'), b.get('vacation_quota') or None,
               b.get('salary_notes',''), salary_item_ids_json, overrides_json,
@@ -7264,6 +7434,8 @@ def api_salary_staff_update(sid):
               (b.get('address') or '').strip(),
               _f('meal_allowance'), _f('driver_allowance'),
               sid))
+        # 薪資變動後，重算該員工已核准加班費（避免快照過時導致 0 元或舊金額）
+        _recompute_approved_ot_pay(conn, sid)
         row = conn.execute("SELECT * FROM punch_staff WHERE id=%s", (sid,)).fetchone()
     return jsonify(punch_staff_row(row)) if row else ('', 404)
 
@@ -8149,6 +8321,94 @@ def api_punch_req_review_v2(rid):
     if review_note: extra += f"\n審核意見：{review_note}"
     _notify_review_result(row['staff_id'], '補打卡申請', new_status, extra)
     return jsonify(punch_req_row(row))
+
+
+@app.route('/api/punch/requests/<int:rid>/revoke', methods=['POST'])
+@login_required
+def api_punch_req_revoke(rid):
+    """撤銷已核准的補打卡申請：軟刪除核准時產生的打卡紀錄，並把申請退回 pending/rejected。"""
+    b          = request.get_json(force=True, silent=True) or {}
+    revoked_by = (b.get('revoked_by') or '').strip()
+    reason     = (b.get('reason') or '').strip()
+    to_status  = b.get('to_status', 'pending')
+    if to_status not in ('pending', 'rejected'):
+        return jsonify({'error': 'invalid to_status'}), 400
+    if not revoked_by:
+        return jsonify({'error': '請填寫撤銷人'}), 400
+
+    with get_db() as conn:
+        req = conn.execute("SELECT * FROM punch_requests WHERE id=%s", (rid,)).fetchone()
+        if not req:
+            return ('', 404)
+        if req['status'] != 'approved':
+            return jsonify({'error': '只有已核准的申請可以撤銷'}), 409
+
+        # 找出核准時寫入的打卡紀錄：先比對備註中的申請編號，找不到再用「同員工/類型/時間的手動打卡」比對
+        recs = conn.execute("""
+            SELECT * FROM punch_records
+            WHERE staff_id=%s AND deleted_at IS NULL
+              AND (note LIKE %s OR note LIKE %s)
+        """, (req['staff_id'], f'補打卡申請 #{rid}：%', f'補打卡申請#{rid}')).fetchall()
+        if not recs:
+            # 舊資料備註格式可能不同；限定為「由補打卡申請產生」的手動打卡，避免誤刪管理員自行補的紀錄
+            recs = conn.execute("""
+                SELECT * FROM punch_records
+                WHERE staff_id=%s AND punch_type=%s AND punched_at=%s
+                  AND is_manual IS TRUE AND deleted_at IS NULL
+                  AND note LIKE %s
+            """, (req['staff_id'], req['punch_type'], req['requested_at'],
+                  '補打卡申請%')).fetchall()
+            if len(recs) > 1:
+                return jsonify({'error': f'找到 {len(recs)} 筆時間相同的補打卡紀錄，'
+                                         f'無法判斷對應哪一筆，請至打卡紀錄手動處理'}), 409
+
+        removed = []
+        for old in recs:
+            conn.execute("UPDATE punch_records SET deleted_at=NOW(), deleted_by=%s WHERE id=%s",
+                         (revoked_by, old['id']))
+            conn.execute("""
+                INSERT INTO punch_audit_log (record_id, action, staff_id, changed_by, old_data, note)
+                VALUES (%s,'delete',%s,%s,%s,%s)
+            """, (old['id'], old['staff_id'], revoked_by,
+                  _json.dumps({'punch_type': old['punch_type'],
+                               'punched_at': old['punched_at'].isoformat() if old['punched_at'] else None,
+                               'note': old['note']}),
+                  f'撤銷補打卡申請 #{rid}' + (f'：{reason}' if reason else '')))
+            # 該月薪資若已確認，重設為草稿以反映打卡變動
+            if old['punched_at']:
+                conn.execute("""
+                    UPDATE salary_records SET status='draft', updated_at=NOW()
+                    WHERE staff_id=%s AND month=%s AND status='confirmed'
+                """, (old['staff_id'], old['punched_at'].strftime('%Y-%m')))
+            removed.append(old['id'])
+
+        # 保留原審核人，讓申請單上仍看得到是誰核准的；撤銷資訊附在審核意見
+        note_parts = [f'原由 {req["reviewed_by"] or "（未填）"} 核准，'
+                      f'經 {revoked_by} 撤銷']
+        if reason: note_parts.append(f'原因：{reason}')
+        if req['review_note']: note_parts.append(f'原審核意見：{req["review_note"]}')
+        row = conn.execute("""
+            UPDATE punch_requests
+            SET status=%s, reviewed_at=NULL, review_note=%s
+            WHERE id=%s
+            RETURNING *, (SELECT name FROM punch_staff WHERE id=staff_id) as staff_name
+        """, (to_status, '｜'.join(note_parts), rid)).fetchone()
+
+    _sys_audit('punch', 'revoke_approval', 'punch_request', rid,
+               old_data={'status': 'approved', 'reviewed_by': req['reviewed_by']},
+               new_data={'status': to_status, 'removed_record_ids': removed},
+               note=reason)
+
+    LABEL  = {'in': '上班打卡', 'out': '下班打卡', 'break_out': '休息開始', 'break_in': '休息結束'}
+    dt_str = req['requested_at'].isoformat()[:16].replace('T', ' ') if req['requested_at'] else ''
+    msg = (f"[撤銷] 補打卡申請核准撤銷\n{LABEL.get(req['punch_type'],'')} {dt_str}"
+           f"\n該筆打卡紀錄已移除，申請狀態改為"
+           f"{'已退回' if to_status == 'rejected' else '待審核'}。")
+    if reason: msg += f"\n原因：{reason}"
+    _notify_staff_line(req['staff_id'], msg + "\n\n請至員工系統查看詳情。")
+
+    return jsonify({'ok': True, 'revoked': rid, 'removed_records': removed,
+                    'request': punch_req_row(row)})
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -9052,44 +9312,69 @@ def api_salary_pdf(rid):
         row = conn.execute("""
             SELECT sr.*, ps.name as staff_name, ps.employee_code,
                    ps.department, ps.role, ps.salary_type,
-                   ps.hourly_rate, ps.hire_date
+                   ps.hourly_rate, ps.hire_date,
+                   ps.ot_rate1, ps.ot_rate2, ps.ot_rate_holiday, ps.ot_rate_special
             FROM salary_records sr
             JOIN punch_staff ps ON ps.id = sr.staff_id
             WHERE sr.id = %s
         """, (rid,)).fetchone()
-    if not row:
-        return '找不到薪資記錄', 404
-    # 員工只能看自己的薪資單
-    if not is_admin and row['staff_id'] != emp_sid:
-        return '無權限', 403
+        if not row:
+            return '找不到薪資記錄', 404
+        # 員工只能看自己的薪資單
+        if not is_admin and row['staff_id'] != emp_sid:
+            return '無權限', 403
+        d = salary_record_row(row)
+        d['staff_id'] = row['staff_id']; d['month'] = row['month']
+        for _rk in ('ot_rate1', 'ot_rate2', 'ot_rate_holiday', 'ot_rate_special'):
+            d[_rk] = row.get(_rk)
+        company_name = _company_name(conn)
+        vm = _payslip_view_model(conn, d)
 
-    d         = salary_record_row(row)
-    items     = d.get('items') or []
-    allow_items  = [i for i in items if i.get('type') == 'allowance']
-    deduct_items = [i for i in items if i.get('type') == 'deduction']
     is_hourly = (row['salary_type'] == 'hourly')
     is_daily  = (row['salary_type'] == 'daily')
 
     def money(v):
-        try: return f"${float(v):,.0f}"
-        except: return '$0'
+        v = float(v or 0)
+        return '－' if abs(v) < 0.5 else f"{v:,.0f}"
 
     def esc_h(s):
         return str(s or '').replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
 
-    allow_rows = ''.join(f"""
-        <tr>
-          <td>{esc_h(i['name'])}</td>
-          <td class="num green">{money(i['amount'])}</td>
-          <td class="note">{esc_h(i.get('calc_note',''))}</td>
-        </tr>""" for i in allow_items)
+    def block_table(title, rows, totals):
+        body = ''.join(
+            f'<tr><td>{esc_h(nm)}{(" <span class=n>"+esc_h(note)+"</span>") if note else ""}</td>'
+            f'<td class="num">{money(amt)}</td></tr>'
+            for (nm, note, amt) in rows) or '<tr><td colspan="2" class="empty">—</td></tr>'
+        tot = ''.join(
+            f'<tr class="tot {cls}"><td>{esc_h(lbl)}</td><td class="num">{money(val)}</td></tr>'
+            for (lbl, val, cls) in totals)
+        return (f'<table class="blk"><thead><tr><th class="sec" colspan="2">{esc_h(title)}</th></tr>'
+                f'<tr><th>項目</th><th class="num">金額</th></tr></thead><tbody>{body}{tot}</tbody></table>')
 
-    deduct_rows = ''.join(f"""
-        <tr>
-          <td>{esc_h(i['name'])}</td>
-          <td class="num red">-{money(i['amount'])}</td>
-          <td class="note">{esc_h(i.get('calc_note',''))}</td>
-        </tr>""" for i in deduct_items)
+    sal_type = '時薪制' if is_hourly else ('日薪制' if is_daily else '月薪制')
+    company  = esc_h(company_name)
+
+    block1_html = block_table('第一區塊｜勞基法法定工資項目',
+                              [(x['name'], x.get('note', ''), x['amount']) for x in vm['block1']],
+                              [('（A）應發工資總計', vm['A'], 'a')])
+    block2_html = block_table('第二區塊｜法定代扣項目',
+                              [(x['name'], x.get('note', ''), x['amount']) for x in vm['block2']],
+                              [('（B）法定扣款總計', vm['B'], 'b'),
+                               ('（C）勞動薪資小計 ＝ (A) − (B)', vm['C'], 'c')])
+    block3_html = block_table('第三區塊｜非工資給付與民事約定代扣項目',
+                              [(x['name'], '', x['sign'] * x['amount']) for x in vm['block3']],
+                              [('第三區塊合計', vm['block3_total'], 'b')])
+    _att = vm.get('attendance') or {}
+    _ls  = _att.get('leave_summary') or []
+    _leave_txt = '、'.join(f"{esc_h(l['name'])} {_rate_fmt(l['hours'])} 小時" for l in _ls) or '無'
+    _an = _att.get('annual')
+    _annual_html = ''
+    if _an:
+        _annual_html = (
+            f"<div><strong>特休動態（單位：小時）：</strong>年度可用 {_rate_fmt(_an['total_hours'])} 小時"
+            f"（{_rate_fmt(_an['total_days'])} 天）｜本月已休 {_rate_fmt(_an['month_used_hours'])}"
+            f"｜累計已休 {_rate_fmt(_an['used_hours'])}｜剩餘 {_rate_fmt(_an['remain_hours'])} 小時"
+            f"（{_rate_fmt(_an['remain_days'])} 天）</div>")
 
     punch_table = ''
     if is_hourly and d.get('punch_details'):
@@ -9119,119 +9404,84 @@ def api_salary_pdf(rid):
     if float(d.get('unpaid_days',0)) > 0:
         attend_str += f"（無薪 {d.get('unpaid_days',0)} 天）"
 
-    html = f"""<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-<meta charset="utf-8">
-<title>薪資單 {esc_h(row['staff_name'])} {esc_h(row['month'])}</title>
-<style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ font-family: 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
-          font-size: 13px; color: #1a2340; background: #fff; padding: 32px; }}
-  .header {{ display: flex; justify-content: space-between; align-items: flex-start;
-             border-bottom: 3px solid #1a2340; padding-bottom: 16px; margin-bottom: 24px; }}
-  .company {{ font-size: 20px; font-weight: 800; color: #1a2340; }}
-  .slip-title {{ font-size: 14px; color: #666; margin-top: 4px; }}
-  .staff-info {{ font-size: 12px; color: #444; text-align: right; line-height: 1.8; }}
-  .summary {{ display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-bottom: 24px; }}
-  .sum-card {{ border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; text-align: center; }}
-  .sum-label {{ font-size: 10px; color: #888; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .06em; }}
-  .sum-val {{ font-size: 22px; font-weight: 800; font-family: 'DM Mono', monospace; }}
-  .sum-val.green {{ color: #2e9e6b; }}
-  .sum-val.red   {{ color: #d64242; }}
-  .sum-val.navy  {{ color: #1a2340; }}
-  .attend {{ background: #f8fafc; border-radius: 6px; padding: 8px 14px;
-             font-size: 12px; color: #666; margin-bottom: 20px; }}
-  h3 {{ font-size: 12px; font-weight: 700; color: #888; letter-spacing: .08em;
-        text-transform: uppercase; margin: 20px 0 8px; }}
-  table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-  th {{ background: #f1f5f9; padding: 8px 12px; text-align: left;
-        font-size: 11px; font-weight: 700; color: #666;
-        border-bottom: 2px solid #e2e8f0; }}
-  td {{ padding: 7px 12px; border-bottom: 1px solid #f0f2f8; }}
-  td.num {{ text-align: right; font-family: 'DM Mono', monospace; font-weight: 600; }}
-  td.note {{ font-size: 11px; color: #999; }}
-  td.green {{ color: #2e9e6b; }}
-  td.red   {{ color: #d64242; }}
-  tfoot td {{ font-weight: 700; background: #f8fafc; border-top: 2px solid #e2e8f0; }}
-  .net-row td {{ font-size: 16px; font-weight: 800; background: #1a2340; color: #fff; }}
-  .net-row td.num {{ color: #f0c040; font-size: 20px; }}
-  .footer {{ margin-top: 32px; padding-top: 16px; border-top: 1px solid #e2e8f0;
-             display: flex; justify-content: space-between; font-size: 11px; color: #999; }}
-  .sign-area {{ display: flex; gap: 48px; margin-top: 40px; }}
-  .sign-box {{ flex: 1; border-top: 1px solid #ccc; padding-top: 6px; font-size: 11px; color: #666; }}
-  @media print {{
-    body {{ padding: 16px; }}
-    @page {{ margin: 12mm; size: A4; }}
-    .no-print {{ display: none !important; }}
-  }}
-</style>
-</head>
-<body>
+    _CSS = """<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+         font-size: 13px; color: #1a2340; background: #fff; padding: 28px; }
+  .title-bar { background:#1F3864; color:#fff; font-size:18px; font-weight:800;
+               text-align:center; padding:12px; border-radius:4px 4px 0 0; }
+  .info { display:grid; grid-template-columns: 1.4fr 1fr; gap:0; border:1px solid #d5dae2; border-top:none; }
+  .info-grid { display:grid; grid-template-columns: auto 1fr auto 1fr; }
+  .info-grid div { padding:7px 10px; font-size:12px; border-bottom:1px solid #eef1f6; }
+  .info-grid .k { background:#EAEFF7; color:#666; font-weight:600; }
+  .bank { background:#FFF2CC; border-left:1px solid #d5dae2; display:flex; flex-direction:column;
+          align-items:center; justify-content:center; padding:10px; }
+  .bank .bk-l { font-size:12px; color:#7a6500; }
+  .bank .bk-v { font-size:24px; font-weight:800; font-family:'DM Mono',monospace; color:#5b4a00; }
+  table.blk { width:100%; border-collapse:collapse; margin-top:14px; border:1px solid #d5dae2; }
+  table.blk th.sec { background:#1F3864; color:#fff; text-align:left; font-size:13px; font-weight:700; padding:8px 12px; }
+  table.blk th { background:#EAEFF7; color:#445; font-size:11px; font-weight:700; padding:6px 12px; text-align:left; border-bottom:1px solid #d5dae2; }
+  table.blk th.num, table.blk td.num { text-align:right; font-family:'DM Mono',monospace; }
+  table.blk td { padding:7px 12px; border-bottom:1px solid #f0f2f8; font-size:13px; }
+  table.blk td .n { font-size:11px; color:#9aa3b2; }
+  table.blk td.empty { text-align:center; color:#ccc; }
+  tr.tot td { font-weight:800; background:#f4f6fa; border-top:1px solid #d5dae2; }
+  tr.tot.a td, tr.tot.c td { background:#E2EFDA; }
+  tr.tot.b td { background:#EAEFF7; }
+  .att { border:1px solid #d5dae2; margin-top:14px; }
+  .att .att-h { background:#1F3864; color:#fff; font-weight:700; padding:7px 12px; font-size:13px; }
+  .att .att-b { padding:9px 12px; font-size:12px; line-height:1.9; }
+  .final { display:flex; justify-content:space-between; align-items:center; background:#1F3864;
+           color:#fff; padding:12px 16px; margin-top:14px; border-radius:0 0 4px 4px; }
+  .final .f-l { font-size:14px; font-weight:700; }
+  .final .f-v { font-size:22px; font-weight:800; font-family:'DM Mono',monospace; }
+  h3 { font-size:12px; font-weight:700; color:#888; margin:18px 0 6px; }
+  .sign-area { display:flex; gap:48px; margin-top:40px; }
+  .sign-box { flex:1; border-top:1px solid #ccc; padding-top:6px; font-size:11px; color:#666; }
+  .footer { margin-top:28px; padding-top:14px; border-top:1px solid #e2e8f0;
+            display:flex; justify-content:space-between; font-size:11px; color:#999; }
+  @media print { body { padding:14px; } @page { margin: 10mm; size: A4; } .no-print { display:none !important; } }
+</style>"""
 
-<div class="no-print" style="text-align:right;margin-bottom:20px">
-  <button onclick="window.print()"
-    style="padding:10px 24px;background:#1a2340;color:#fff;border:none;border-radius:6px;
-           font-size:13px;font-weight:700;cursor:pointer">列印 / 儲存 PDF</button>
+    html = ("<!DOCTYPE html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\">"
+            f"<title>薪資單 {esc_h(row['staff_name'])} {esc_h(row['month'])}</title>"
+            + _CSS + "</head><body>" + f"""
+<div class="no-print" style="text-align:right;margin-bottom:16px">
+  <button onclick="window.print()" style="padding:10px 24px;background:#1F3864;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer">列印 / 儲存 PDF</button>
 </div>
 
-<div class="header">
-  <div>
-    <div class="company">薪資明細單</div>
-    <div class="slip-title">{esc_h(row['month'])} · {sal_type}</div>
+<div class="title-bar">{company}｜{sal_type}薪資明細表</div>
+<div class="info">
+  <div class="info-grid">
+    <div class="k">付款月份</div><div>{esc_h(row['month'])}</div>
+    <div class="k">員工姓名</div><div>{esc_h(row['staff_name'])}</div>
+    <div class="k">部門</div><div>{esc_h(row['department'] or '－')}</div>
+    <div class="k">員工編號</div><div>{esc_h(str(row['employee_code'] or '－'))}</div>
+    <div class="k">薪資結構</div><div>{sal_type}</div>
+    <div class="k">到職日</div><div>{esc_h(str(row['hire_date']) if row['hire_date'] else '－')}</div>
   </div>
-  <div class="staff-info">
-    <div><strong>{esc_h(row['staff_name'])}</strong></div>
-    <div>{esc_h(row['employee_code'] or '')}　{esc_h(row['department'] or '')}　{esc_h(row['role'] or '')}</div>
-    <div>到職日：{esc_h(str(row['hire_date']) if row['hire_date'] else '—')}</div>
-    <div>狀態：<strong>{status_str}</strong></div>
+  <div class="bank">
+    <div class="bk-l">本月銀行轉帳</div>
+    <div class="bk-v">{money(vm['final'])}</div>
   </div>
 </div>
 
-<div class="summary">
-  <div class="sum-card">
-    <div class="sum-label">津貼合計</div>
-    <div class="sum-val green">{money(d.get('allowance_total',0))}</div>
-  </div>
-  <div class="sum-card">
-    <div class="sum-label">扣除合計</div>
-    <div class="sum-val red">-{money(d.get('deduction_total',0))}</div>
-  </div>
-  <div class="sum-card" style="border-color:#1a2340">
-    <div class="sum-label">實領金額</div>
-    <div class="sum-val navy">{money(d.get('net_pay',0))}</div>
+{block1_html}
+{block2_html}
+{block3_html}
+
+<div class="att">
+  <div class="att-h">本月出勤與特休資訊備註</div>
+  <div class="att-b">
+    <div><strong>本月請假紀錄：</strong>{_leave_txt}</div>
+    {_annual_html}
   </div>
 </div>
 
-<div class="attend">{attend_str}</div>
-
-<h3>津貼項目</h3>
-<table>
-  <thead><tr><th>項目</th><th style="text-align:right">金額</th><th>計算說明</th></tr></thead>
-  <tbody>{allow_rows}</tbody>
-  <tfoot>
-    <tr><td><strong>津貼合計</strong></td><td class="num green"><strong>{money(d.get('allowance_total',0))}</strong></td><td></td></tr>
-  </tfoot>
-</table>
-
-<h3>扣除項目</h3>
-<table>
-  <thead><tr><th>項目</th><th style="text-align:right">金額</th><th>計算說明</th></tr></thead>
-  <tbody>{deduct_rows if deduct_rows else '<tr><td colspan="3" style="color:#ccc;text-align:center;padding:12px">無扣除項目</td></tr>'}</tbody>
-  <tfoot>
-    <tr><td><strong>扣除合計</strong></td><td class="num red"><strong>-{money(d.get('deduction_total',0))}</strong></td><td></td></tr>
-  </tfoot>
-</table>
-
-<table style="margin-top:12px">
-  <tbody>
-    <tr class="net-row">
-      <td><strong>實領金額</strong></td>
-      <td class="num">{money(d.get('net_pay',0))}</td>
-      <td style="color:#ccc;font-size:11px">= 津貼 {money(d.get('allowance_total',0))} - 扣除 {money(d.get('deduction_total',0))}</td>
-    </tr>
-  </tbody>
-</table>
+<div class="final">
+  <span class="f-l">最終銀行總轉帳總額 ＝ (C) ＋ 第三區塊合計</span>
+  <span class="f-v">NT$ {money(vm['final'])}</span>
+</div>
 
 {punch_table}
 
@@ -9242,12 +9492,11 @@ def api_salary_pdf(rid):
 </div>
 
 <div class="footer">
-  <span>本薪資單由系統自動產生</span>
+  <span>本薪資單由系統自動產生　狀態：{status_str}</span>
   <span>列印日期：<script>document.write(new Date().toLocaleDateString('zh-TW'))</script></span>
 </div>
 
-</body>
-</html>"""
+</body></html>""")
 
     return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
@@ -9309,8 +9558,17 @@ def api_ot_batch():
             """, (new_status, by, note, rid)).fetchone()
             if row:
                 if action == 'approve':
-                    pay, _ = _calc_ot_pay(dict(row), float(row['ot_hours']),
-                                          row.get('day_type','weekday'))
+                    staff_s = conn.execute("""
+                        SELECT base_salary, hourly_rate, daily_hours,
+                               ot_rate1, ot_rate2, ot_rate_holiday, ot_rate_special, salary_type
+                        FROM punch_staff WHERE id=%s
+                    """, (row['staff_id'],)).fetchone()
+                    pay_mode_s = row.get('pay_mode', 'cash') or 'cash'
+                    if staff_s and pay_mode_s in ('cash', 'both'):
+                        pay, _ = _calc_ot_pay(dict(staff_s), float(row['ot_hours']),
+                                              row.get('day_type', 'weekday'))
+                    else:
+                        pay = 0.0
                     conn.execute("""
                         UPDATE overtime_requests SET ot_pay=%s WHERE id=%s
                     """, (pay, rid))
@@ -10373,19 +10631,28 @@ def api_salary_preview():
         for _r in _leave_rows_pv:
             _leave_map_pv.setdefault(_r['staff_id'], []).append(dict(_r))
 
+        # 打卡集合以「進場日」歸班次（跨午夜下班歸進場日），視窗前後各擴 1 天
+        from datetime import timezone as _tz_pv
+        _TW_pv = _tz_pv(_td_pv(hours=8))
+        _ms_ext_pv = (_d_pv.fromisoformat(_mstart_pv) - _td_pv(days=1)).isoformat()
+        _me_ext_pv = (_d_pv.fromisoformat(_mend_pv) + _td_pv(days=1)).isoformat()
         _punch_rows_pv = conn.execute("""
-            SELECT DISTINCT staff_id,
-                   (punched_at AT TIME ZONE 'Asia/Taipei')::date as work_date
+            SELECT staff_id, punch_type, punched_at
             FROM punch_records
             WHERE staff_id = ANY(%s)
-              AND punched_at >= %s::date AT TIME ZONE 'Asia/Taipei'
-              AND punched_at <  %s::date AT TIME ZONE 'Asia/Taipei'
+              AND punched_at AT TIME ZONE 'Asia/Taipei' >= %s::date
+              AND punched_at AT TIME ZONE 'Asia/Taipei' <  %s::date
               AND deleted_at IS NULL
-        """, (staff_ids, _mstart_pv, _mend_pv)).fetchall()
-        _punch_dates_pv: dict = {}
+            ORDER BY staff_id, punched_at ASC
+        """, (staff_ids, _ms_ext_pv, _me_ext_pv)).fetchall()
+        _punch_typed_pv: dict = {}
         for _r in _punch_rows_pv:
-            _ds = _r['work_date'].isoformat() if hasattr(_r['work_date'], 'isoformat') else str(_r['work_date'])
-            _punch_dates_pv.setdefault(_r['staff_id'], set()).add(_ds)
+            _pa = _r['punched_at']
+            if _pa.tzinfo is None:
+                _pa = _pa.replace(tzinfo=_tz_pv.utc)
+            _punch_typed_pv.setdefault(_r['staff_id'], []).append(
+                (_r['punch_type'], _pa.astimezone(_TW_pv)))
+        _punch_dates_pv = {sid: _present_day_set(rows) for sid, rows in _punch_typed_pv.items()}
 
         _leave_date_rows_pv = conn.execute("""
             SELECT staff_id, start_date, end_date FROM leave_requests
@@ -12467,7 +12734,7 @@ def _line_query_salary(staff, user_id):
     try:
         with get_db() as conn:
             row = conn.execute("""
-                SELECT month, net_pay, base_salary, ot_pay,
+                SELECT month, net_pay, base_salary, hourly_base_pay, salary_type, ot_pay,
                        allowance_total, deduction_total, status,
                        work_days, actual_days
                 FROM salary_records
@@ -12494,11 +12761,19 @@ def _line_query_salary(staff, user_id):
     if comp_bal:
         remain = float(comp_bal['total_days'] or 0) - float(comp_bal['used_days'] or 0)
         comp_str = _lmsg('salary_comp_bal', lang, remain=f'{remain:.1f}', year=comp_bal['year'])
+    # 底薪：月薪制取 base_salary；時薪/日薪制取實際本薪（hourly_base_pay 已存日薪制全勤本薪）
+    _styp = row['salary_type'] or 'monthly'
+    _disp_base = float(row['base_salary'] or 0) if _styp == 'monthly' else float(row['hourly_base_pay'] or 0)
+    _ot_pay    = float(row['ot_pay'] or 0)
+    # 其他津貼 = 津貼合計 − 本薪 − 加班費，避免底薪與津貼重疊（底薪+其他津貼+加班−扣除=實領）
+    _other_allow = round(float(row['allowance_total'] or 0) - _disp_base - _ot_pay, 0)
+    if _other_allow < 0:
+        _other_allow = 0.0
     _send_line_punch(user_id, _lmsg('salary_body', lang,
         name=staff['name'], month=row['month'],
-        base=float(row['base_salary'] or 0),
-        allow=float(row['allowance_total'] or 0),
-        ot=float(row['ot_pay'] or 0),
+        base=_disp_base,
+        allow=_other_allow,
+        ot=_ot_pay,
         ded=float(row['deduction_total'] or 0),
         net=float(row['net_pay'] or 0),
         actual=float(row['actual_days'] or 0),
@@ -20466,117 +20741,326 @@ def _make_pdf_response(pdf_bytes: bytes, filename: str):
     return resp
 
 
-def _build_payslip_pdf(record: dict) -> bytes:
-    """生成薪資單 PDF bytes。"""
+def _company_name(conn):
+    """薪資單抬頭公司名稱：取主管理員帳號的顯示名稱。"""
+    try:
+        r = conn.execute(
+            "SELECT display_name FROM admin_accounts WHERE active=TRUE ORDER BY is_super DESC, id LIMIT 1"
+        ).fetchone()
+        return (r['display_name'] if r and r['display_name'] else '薪資明細表')
+    except Exception:
+        return '薪資明細表'
+
+def _rate_fmt(r):
+    return ('%g' % float(r or 0))
+
+def _ot_tier_breakdown(conn, staff_id, month, rates, total_ot_pay):
+    """加班費分段明細 [{name, hours, amount}]。
+
+    以核准加班申請取得各段「時數」分布，再把薪資記錄裡的加班費總額（total_ot_pay，
+    已寫入該月薪資、為其他欄位採用的基準）依「時數×倍率」權重分攤到各段，
+    確保各段金額加總精準等於 total_ot_pay，與薪資單其他金額一致。
+    """
+    from collections import OrderedDict
+    total_ot_pay = round(float(total_ot_pay or 0), 0)
+    if total_ot_pay == 0:
+        return []
+    s, e = _month_range(month)
+    rows = conn.execute("""
+        SELECT ot_hours, day_type
+        FROM overtime_requests
+        WHERE staff_id=%s AND status='approved'
+          AND COALESCE(ot_date, request_date) >= %s::date
+          AND COALESCE(ot_date, request_date) < %s::date
+    """, (staff_id, s, e)).fetchall()
+    r1 = float(rates.get('ot_rate1') or 1.34)
+    r2 = float(rates.get('ot_rate2') or 1.67)
+    rh = float(rates.get('ot_rate_holiday') or 2.0)
+    rs = float(rates.get('ot_rate_special') or 2.0)
+    buckets = OrderedDict()   # key -> [label, hours, weight]
+    def _add(key, label, hrs, weight):
+        if key not in buckets: buckets[key] = [label, 0.0, 0.0]
+        buckets[key][1] += hrs; buckets[key][2] += weight
+    for r in rows:
+        h  = float(r['ot_hours'] or 0)
+        dt = r['day_type'] or 'weekday'
+        if h <= 0: continue
+        if dt == 'holiday':
+            _add('holiday', f'國定假日加班（{_rate_fmt(rh)}倍）', h, h * rh)
+        elif dt == 'special':
+            _add('special', f'例假日加班（{_rate_fmt(rs)}倍）', h, h * rs)
+        else:
+            if dt == 'rest_day':
+                billed = max(h, 4.0); pfx = '休息日加班'
+            else:
+                billed = h; pfx = '平日加班'
+            h1 = min(billed, 2.0); h2 = max(0.0, billed - 2.0)
+            if h1 > 0: _add(pfx + '1', f'{pfx}（前2小時·{_rate_fmt(r1)}倍）', h1, h1 * r1)
+            if h2 > 0: _add(pfx + '2', f'{pfx}（第3小時起·{_rate_fmt(r2)}倍）', h2, h2 * r2)
+    vals = list(buckets.values())
+    if not vals:
+        # 有加班費但查無核准申請明細（例如時薪制由打卡估算）→ 併為單行
+        return [{'name': '加班費', 'hours': 0.0, 'amount': total_ot_pay}]
+    wsum = sum(v[2] for v in vals) or 1.0
+    out, allocated = [], 0.0
+    for i, (label, hrs, weight) in enumerate(vals):
+        amt = round(total_ot_pay - allocated, 0) if i == len(vals) - 1 else round(total_ot_pay * weight / wsum, 0)
+        allocated += amt
+        out.append({'name': label, 'hours': round(hrs, 1), 'amount': amt})
+    return out
+
+def _payslip_attendance(conn, staff_id, month):
+    """薪資單底部：本月請假（依假別小時）＋特休動態。"""
+    from datetime import date as _d_att
+    s, e = _month_range(month)
+    y = int(month[:4])
+    leave_rows = conn.execute("""
+        SELECT lt.name AS name, lt.code AS code, lr.start_date, lr.end_date
+        FROM leave_requests lr JOIN leave_types lt ON lt.id = lr.leave_type_id
+        WHERE lr.staff_id=%s AND lr.status='approved'
+          AND lr.start_date < %s::date AND lr.end_date >= %s::date
+    """, (staff_id, e, s)).fetchall()
+    ms = _d_att(y, int(month[5:]), 1)
+    me = _d_att.fromisoformat(e)
+    by_type = {}
+    annual_month_days = 0.0
+    for r in leave_rows:
+        days = _clip_leave_to_month(r['start_date'], r['end_date'], ms, me)
+        if days <= 0: continue
+        by_type[r['name']] = by_type.get(r['name'], 0.0) + days
+        if r['code'] == 'annual':
+            annual_month_days += days
+    leave_summary = [{'name': k, 'hours': round(v * 8, 1)} for k, v in by_type.items()]
+    annual = None
+    bal = conn.execute("""
+        SELECT lb.total_days, lb.used_days
+        FROM leave_balances lb JOIN leave_types lt ON lt.id = lb.leave_type_id
+        WHERE lb.staff_id=%s AND lt.code='annual' AND lb.year=%s
+    """, (staff_id, y)).fetchone()
+    if bal:
+        total = float(bal['total_days'] or 0)
+        used  = float(bal['used_days'] or 0)
+        annual = {
+            'total_days':  round(total, 1),  'total_hours': round(total * 8, 1),
+            'used_days':   round(used, 1),   'used_hours':  round(used * 8, 1),
+            'month_used_hours': round(annual_month_days * 8, 1),
+            'prev_used_hours':  round(max(0.0, used - annual_month_days) * 8, 1),
+            'remain_days':  round(total - used, 1),
+            'remain_hours': round((total - used) * 8, 1),
+        }
+    return {'leave_summary': leave_summary, 'annual': annual}
+
+def _payslip_view_model(conn, record):
+    """把一筆 salary_record 組裝成三區塊薪資單資料模型（PDF 與員工自助頁共用）。"""
+    items = record.get('items') or []
+    if isinstance(items, str):
+        try: items = _json.loads(items)
+        except Exception: items = []
+    def _cat(it): return it.get('category') or 'statutory'
+
+    stat_allow  = [it for it in items if _cat(it) == 'statutory' and it.get('type') == 'allowance' and it.get('id') != 'ot']
+    stat_deduct = [it for it in items if _cat(it) == 'statutory' and it.get('type') == 'deduction']
+    nonwage     = [it for it in items if _cat(it) == 'non_wage']
+
+    rates = {
+        'ot_rate1':        record.get('ot_rate1'),
+        'ot_rate2':        record.get('ot_rate2'),
+        'ot_rate_holiday': record.get('ot_rate_holiday'),
+        'ot_rate_special': record.get('ot_rate_special'),
+    }
+    ot_total = record.get('ot_pay')
+    if ot_total is None:
+        # 後援：找回 items 內的加班費單行金額
+        ot_total = sum(float(it.get('amount', 0)) for it in items if it.get('id') == 'ot')
+    ot_lines = _ot_tier_breakdown(conn, record['staff_id'], record['month'], rates, ot_total)
+
+    block1 = [{'name': it.get('name', ''), 'note': it.get('calc_note', ''),
+               'amount': round(float(it.get('amount', 0)), 0)} for it in stat_allow]
+    for ot in ot_lines:
+        block1.append({'name': ot['name'], 'note': f"共 {_rate_fmt(ot['hours'])} 小時",
+                       'amount': ot['amount']})
+    A = round(sum(x['amount'] for x in block1), 0)
+
+    block2 = [{'name': it.get('name', ''), 'note': it.get('calc_note', ''),
+               'amount': round(float(it.get('amount', 0)), 0)} for it in stat_deduct]
+    B = round(sum(x['amount'] for x in block2), 0)
+    C = round(A - B, 0)
+
+    block3 = []
+    b3 = 0.0
+    for it in nonwage:
+        amt  = round(float(it.get('amount', 0)), 0)
+        sign = 1 if it.get('type') == 'allowance' else -1
+        block3.append({'name': it.get('name', ''), 'amount': amt, 'sign': sign})
+        b3 += sign * amt
+    b3 = round(b3, 0)
+    final = round(C + b3, 0)
+
+    return {
+        'block1': block1, 'A': A,
+        'block2': block2, 'B': B, 'C': C,
+        'block3': block3, 'block3_total': b3,
+        'final': final,
+        'attendance': _payslip_attendance(conn, record['staff_id'], record['month']),
+    }
+
+
+def _make_pdf_response(pdf_bytes: bytes, filename: str):
+    from flask import make_response
+    resp = make_response(pdf_bytes)
+    resp.headers['Content-Type'] = 'application/pdf'
+    resp.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+    return resp
+
+
+def _build_payslip_pdf(record: dict, vm: dict) -> bytes:
+    """生成三區塊薪資明細表 PDF bytes（勞基法法定工資／法定代扣／非工資給付）。"""
     import io
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.units import mm
     from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
-                                    Paragraph, Spacer, HRFlowable)
+                                    Paragraph, Spacer)
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
     buf = io.BytesIO()
     _, font = _pdf_styles()
     doc = SimpleDocTemplate(buf, pagesize=A4,
-                            leftMargin=20*mm, rightMargin=20*mm,
-                            topMargin=20*mm, bottomMargin=20*mm)
+                            leftMargin=16*mm, rightMargin=16*mm,
+                            topMargin=14*mm, bottomMargin=14*mm)
 
-    title_style = ParagraphStyle('title', fontName=font, fontSize=16,
-                                 alignment=TA_CENTER, spaceAfter=6)
-    sub_style   = ParagraphStyle('sub',   fontName=font, fontSize=10,
-                                 alignment=TA_CENTER, textColor=colors.grey)
-    label_style = ParagraphStyle('lbl',   fontName=font, fontSize=9)
-    bold_style  = ParagraphStyle('bold',  fontName=font, fontSize=9)
+    navy   = colors.HexColor('#1F3864')
+    blue   = colors.HexColor('#2E4D7B')
+    light  = colors.HexColor('#EAEFF7')
+    green  = colors.HexColor('#E2EFDA')
+    yellow = colors.HexColor('#FFF2CC')
+    grey   = colors.HexColor('#808080')
+    line   = colors.HexColor('#D5DAE2')
 
-    col_w = [85*mm, 85*mm]
-    blue  = colors.HexColor('#1F4E79')
-    light = colors.HexColor('#DEEAF1')
+    PAGE_W = A4[0] - 32*mm
+    LW, RW = PAGE_W * 0.70, PAGE_W * 0.30
 
-    def _fmt(v): return f"NT$ {float(v or 0):,.0f}"
+    def _money(v):
+        v = float(v or 0)
+        return '－' if abs(v) < 0.5 else f'{v:,.0f}'
 
-    items_raw = record.get('items') or []
-    if isinstance(items_raw, str):
-        try: items_raw = _json.loads(items_raw)
-        except: items_raw = []
-    allowances  = [it for it in items_raw if it.get('type') == 'allowance']
-    deductions  = [it for it in items_raw if it.get('type') == 'deduction']
+    title_style = ParagraphStyle('t', fontName=font, fontSize=14, alignment=TA_CENTER, textColor=colors.white)
+    name_style  = ParagraphStyle('n', fontName=font, fontSize=9, leading=12)
+    amt_style   = ParagraphStyle('a', fontName=font, fontSize=9, alignment=TA_RIGHT)
+    amt_bold    = ParagraphStyle('ab', fontName=font, fontSize=9.5, alignment=TA_RIGHT)
+    foot_style  = ParagraphStyle('f', fontName=font, fontSize=8.5, leading=14)
 
-    story = []
-    story.append(Paragraph(f"{record.get('company_name', '薪資單')}", title_style))
-    story.append(Paragraph(f"{record.get('month','')} 薪資明細", sub_style))
-    story.append(Spacer(1, 5*mm))
+    stype_label = {'monthly': '月薪制', 'hourly': '時薪制', 'daily': '日薪制'}.get(
+        record.get('salary_type', 'monthly'), '月薪制')
+    company = record.get('company_name') or '薪資明細表'
 
-    # 員工資訊
-    emp_data = [
-        ['姓名', record.get('staff_name',''), '部門', record.get('department','')],
-        ['員工編號', record.get('employee_code',''), '薪資月份', record.get('month','')],
-        ['底薪', _fmt(record.get('base_salary', 0)), '出勤天數', str(record.get('work_days',''))],
-    ]
-    emp_table = Table(emp_data, colWidths=[30*mm, 60*mm, 30*mm, 50*mm])
-    emp_table.setStyle(TableStyle([
-        ('FONTNAME', (0,0), (-1,-1), font),
-        ('FONTSIZE', (0,0), (-1,-1), 9),
-        ('TEXTCOLOR', (0,0), (0,-1), colors.grey),
-        ('TEXTCOLOR', (2,0), (2,-1), colors.grey),
-        ('BACKGROUND', (0,0), (-1,-1), light),
-        ('BOX', (0,0), (-1,-1), 0.5, colors.grey),
-        ('INNERGRID', (0,0), (-1,-1), 0.25, colors.lightgrey),
-        ('PADDING', (0,0), (-1,-1), 4),
-    ]))
-    story.append(emp_table)
-    story.append(Spacer(1, 4*mm))
-
-    # 加項 / 減項
-    earn_rows = [['加給項目', '金額']] + \
-                [[it.get('name',''), _fmt(it.get('amount',0))] for it in allowances] + \
-                [['底薪', _fmt(record.get('base_salary',0))]]
-    dedu_rows = [['扣除項目', '金額']] + \
-                [[it.get('name',''), _fmt(it.get('amount',0))] for it in deductions]
-
-    def _mini_table(rows):
-        t = Table(rows, colWidths=[50*mm, 35*mm])
-        t.setStyle(TableStyle([
-            ('FONTNAME',   (0,0), (-1,-1), font),
-            ('FONTSIZE',   (0,0), (-1,-1), 9),
-            ('BACKGROUND', (0,0), (-1,0),  blue),
-            ('TEXTCOLOR',  (0,0), (-1,0),  colors.white),
-            ('FONTNAME',   (0,0), (-1,0),  font),
-            ('ALIGN',      (1,0), (1,-1),  'RIGHT'),
-            ('BOX',        (0,0), (-1,-1), 0.5, colors.grey),
-            ('INNERGRID',  (0,0), (-1,-1), 0.25, colors.lightgrey),
-            ('PADDING',    (0,0), (-1,-1), 4),
-            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, light]),
-        ]))
+    def _section(title, rows, totals):
+        data  = [[Paragraph(f"<b>{title}</b>", ParagraphStyle('sh', fontName=font, fontSize=9.5, textColor=colors.white)), '']]
+        style = [
+            ('FONTNAME', (0, 0), (-1, -1), font),
+            ('SPAN', (0, 0), (1, 0)), ('BACKGROUND', (0, 0), (1, 0), blue),
+            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LINEBELOW', (0, 1), (-1, -2), 0.25, line),
+            ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 7), ('RIGHTPADDING', (0, 0), (-1, -1), 7),
+            ('BOX', (0, 0), (-1, -1), 0.5, line),
+        ]
+        for (nm, note, amt) in rows:
+            label = nm if not note else f"{nm}　<font color='#9aa3b2' size=7.5>{note}</font>"
+            data.append([Paragraph(label, name_style), Paragraph(_money(amt), amt_style)])
+        for (lbl, val, bg) in totals:
+            data.append([Paragraph(f"<b>{lbl}</b>", name_style), Paragraph(f"<b>{_money(val)}</b>", amt_bold)])
+            r = len(data) - 1
+            style.append(('BACKGROUND', (0, r), (1, r), bg))
+        t = Table(data, colWidths=[LW, RW])
+        t.setStyle(TableStyle(style))
         return t
 
-    two_col = Table([[_mini_table(earn_rows), _mini_table(dedu_rows)]],
-                    colWidths=[90*mm, 90*mm])
-    story.append(two_col)
-    story.append(Spacer(1, 4*mm))
+    story = []
+    title_tbl = Table([[Paragraph(f"{company}｜{stype_label}薪資明細表", title_style)]], colWidths=[PAGE_W])
+    title_tbl.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), navy),
+                                   ('TOPPADDING', (0, 0), (-1, -1), 9), ('BOTTOMPADDING', (0, 0), (-1, -1), 9)]))
+    story.append(title_tbl)
+    story.append(Spacer(1, 3 * mm))
 
-    # 實領
-    net = float(record.get('net_pay', 0))
-    net_data = [['實領金額', _fmt(net)]]
-    net_table = Table(net_data, colWidths=[85*mm, 85*mm])
-    net_table.setStyle(TableStyle([
-        ('FONTNAME',   (0,0), (-1,-1), font),
-        ('FONTSIZE',   (0,0), (-1,-1), 13),
-        ('FONTNAME',   (0,0), (-1,-1), font),
-        ('BACKGROUND', (0,0), (-1,-1), blue),
-        ('TEXTCOLOR',  (0,0), (-1,-1), colors.white),
-        ('ALIGN',      (1,0), (1,-1),  'RIGHT'),
-        ('PADDING',    (0,0), (-1,-1), 8),
-        ('BOX',        (0,0), (-1,-1), 1, blue),
+    # 基本資料 + 本月銀行轉帳
+    info_rows = [
+        ['付款月份', record.get('month', ''), '員工姓名', record.get('staff_name', '')],
+        ['部門', record.get('department', '') or '－', '員工編號', str(record.get('employee_code', '') or '－')],
+        ['薪資結構', stype_label, '到職日', str(record.get('hire_date', '') or '－')],
+    ]
+    info_tbl = Table(info_rows, colWidths=[PAGE_W * 0.15, PAGE_W * 0.33, PAGE_W * 0.15, PAGE_W * 0.37])
+    info_tbl.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (-1, -1), font), ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('TEXTCOLOR', (0, 0), (0, -1), grey), ('TEXTCOLOR', (2, 0), (2, -1), grey),
+        ('BACKGROUND', (0, 0), (-1, -1), light),
+        ('INNERGRID', (0, 0), (-1, -1), 0.4, colors.white), ('PADDING', (0, 0), (-1, -1), 5),
     ]))
-    story.append(net_table)
-    story.append(Spacer(1, 6*mm))
+    bank_tbl = Table([['本月銀行轉帳'], [_money(vm['final'])]], colWidths=[PAGE_W * 0.30])
+    bank_tbl.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (-1, -1), font), ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('BACKGROUND', (0, 0), (-1, -1), yellow), ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#BF9000')),
+        ('FONTSIZE', (0, 0), (0, 0), 9), ('FONTSIZE', (0, 1), (0, 1), 15),
+        ('TEXTCOLOR', (0, 0), (0, 0), grey), ('TOPPADDING', (0, 0), (-1, -1), 5), ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    ]))
+    head = Table([[info_tbl, bank_tbl]], colWidths=[PAGE_W * 0.68, PAGE_W * 0.32])
+    head.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('LEFTPADDING', (1, 0), (1, 0), 6)]))
+    story.append(head)
+    story.append(Spacer(1, 3 * mm))
+
+    # 第一區塊
+    story.append(_section('第一區塊｜勞基法法定工資項目',
+                          [(x['name'], x.get('note', ''), x['amount']) for x in vm['block1']],
+                          [('（A）應發工資總計', vm['A'], green)]))
+    story.append(Spacer(1, 2 * mm))
+    # 第二區塊
+    story.append(_section('第二區塊｜法定代扣項目',
+                          [(x['name'], x.get('note', ''), x['amount']) for x in vm['block2']],
+                          [('（B）法定扣款總計', vm['B'], light),
+                           ('（C）勞動薪資小計 ＝ (A) − (B)', vm['C'], green)]))
+    story.append(Spacer(1, 2 * mm))
+    # 第三區塊
+    story.append(_section('第三區塊｜非工資給付與民事約定代扣項目',
+                          [(x['name'], '', x['sign'] * x['amount']) for x in vm['block3']],
+                          [('第三區塊合計', vm['block3_total'], light)]))
+    story.append(Spacer(1, 3 * mm))
+
+    # 出勤與特休備註
+    att = vm.get('attendance') or {}
+    ls  = att.get('leave_summary') or []
+    leave_txt = '、'.join(f"{l['name']} {_rate_fmt(l['hours'])} 小時" for l in ls) or '無'
+    foot_lines = [f"<b>本月請假紀錄：</b>{leave_txt}"]
+    an = att.get('annual')
+    if an:
+        foot_lines.append(
+            f"<b>特休動態（單位：小時）：</b>年度可用 {_rate_fmt(an['total_hours'])} 小時（{_rate_fmt(an['total_days'])} 天）"
+            f"｜本月已休 {_rate_fmt(an['month_used_hours'])}｜累計已休 {_rate_fmt(an['used_hours'])}"
+            f"｜剩餘 {_rate_fmt(an['remain_hours'])} 小時（{_rate_fmt(an['remain_days'])} 天）")
+    foot_tbl = Table([[Paragraph('本月出勤與特休資訊備註', ParagraphStyle('fh', fontName=font, fontSize=9, textColor=colors.white))]],
+                     colWidths=[PAGE_W])
+    foot_tbl.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), blue), ('PADDING', (0, 0), (-1, -1), 5)]))
+    story.append(foot_tbl)
+    body_tbl = Table([[Paragraph('<br/>'.join(foot_lines), foot_style)]], colWidths=[PAGE_W])
+    body_tbl.setStyle(TableStyle([('BOX', (0, 0), (-1, -1), 0.5, line), ('PADDING', (0, 0), (-1, -1), 7),
+                                  ('BACKGROUND', (0, 0), (-1, -1), colors.white)]))
+    story.append(body_tbl)
+    story.append(Spacer(1, 3 * mm))
+
+    # 最終轉帳
+    final_tbl = Table([[Paragraph('<b>最終銀行總轉帳總額 ＝ (C) ＋ 第三區塊合計</b>',
+                                  ParagraphStyle('ft', fontName=font, fontSize=11, textColor=colors.white)),
+                        Paragraph(f"<b>NT$ {_money(vm['final'])}</b>",
+                                  ParagraphStyle('fv', fontName=font, fontSize=13, alignment=TA_RIGHT, textColor=colors.white))]],
+                      colWidths=[PAGE_W * 0.68, PAGE_W * 0.32])
+    final_tbl.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), navy), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                                   ('PADDING', (0, 0), (-1, -1), 9)]))
+    story.append(final_tbl)
+    story.append(Spacer(1, 4 * mm))
     story.append(Paragraph(
-        f"此薪資單由系統自動產生。確認日期：{_dt.now(TW_TZ).strftime('%Y-%m-%d')}",
-        ParagraphStyle('footer', fontName=font, fontSize=7,
-                       textColor=colors.grey, alignment=TA_CENTER)
-    ))
+        f"此薪資單由系統自動產生。產生日期：{_dt.now(TW_TZ).strftime('%Y-%m-%d')}",
+        ParagraphStyle('footer', fontName=font, fontSize=7, textColor=grey, alignment=TA_CENTER)))
     doc.build(story)
     return buf.getvalue()
 
@@ -20587,21 +21071,25 @@ def api_export_payslip_pdf(rid):
     with get_db() as conn:
         row = conn.execute("""
             SELECT sr.*, ps.name AS staff_name, ps.employee_code, ps.department,
-                   ps.base_salary, ps.hire_date,
-                   a.display_name AS company_name
+                   ps.base_salary, ps.hire_date, ps.salary_type,
+                   ps.ot_rate1, ps.ot_rate2, ps.ot_rate_holiday, ps.ot_rate_special
             FROM salary_records sr
             JOIN punch_staff ps ON ps.id = sr.staff_id
-            LEFT JOIN admin_accounts a ON a.account_id = sr.account_id
             WHERE sr.id = %s
         """, (rid,)).fetchone()
-    if not row: return ('', 404)
-    record = dict(row)
-    if record.get('base_salary'): record['base_salary'] = float(record['base_salary'])
-    if record.get('net_pay'):     record['net_pay']     = float(record['net_pay'])
-    pdf = _build_payslip_pdf(record)
+        if not row: return ('', 404)
+        record = dict(row)
+        if record.get('base_salary'): record['base_salary'] = float(record['base_salary'])
+        if record.get('net_pay'):     record['net_pay']     = float(record['net_pay'])
+        if record.get('hire_date'):   record['hire_date']   = record['hire_date'].isoformat() if hasattr(record['hire_date'], 'isoformat') else str(record['hire_date'])
+        if isinstance(record.get('items'), str):
+            try: record['items'] = _json.loads(record['items'])
+            except Exception: record['items'] = []
+        record['company_name'] = _company_name(conn)
+        vm = _payslip_view_model(conn, record)
+    pdf = _build_payslip_pdf(record, vm)
     fname = f"payslip_{record.get('staff_name',rid)}_{record.get('month','')}.pdf"
     return _make_pdf_response(pdf, fname)
-
 
 def _build_quote_pdf(quote: dict) -> bytes:
     import io

@@ -5802,6 +5802,13 @@ tbody td.date-cell { font-family: 'Noto Sans TC', sans-serif; font-weight: 500; 
             <option value="deduction">扣除（減項）</option>
           </select>
         </div>
+        <div class="form-group">
+          <label class="form-label">區塊類別</label>
+          <select class="form-input" id="sim-category">
+            <option value="statutory">勞基法法定工資／代扣（第一、二區塊）</option>
+            <option value="non_wage">非工資給付與民事約定代扣（第三區塊）</option>
+          </select>
+        </div>
         <div class="form-group full-width">
           <label class="form-label">計算公式（優先）</label>
           <div style="display:flex;gap:6px">
@@ -14258,7 +14265,8 @@ function renderPunchRequests() {
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span style="font-size:12px;font-weight:700;color:${PREQ_COLOR[r.status]||'var(--muted)'}">${PREQ_LABEL[r.status]||r.status}</span>
           ${isPending ? `<button class="btn btn-primary btn-sm" onclick="openPreqModal(${r.id})">審核</button>` : ''}
-          <button class="btn btn-danger btn-sm" onclick="deletePunchReq(${r.id})">刪除</button>
+          ${r.status==='approved' ? `<button class="btn btn-outline btn-sm" onclick="revokePunchReq(${r.id})">撤銷核准</button>` : ''}
+          ${r.status==='approved' ? '' : `<button class="btn btn-danger btn-sm" onclick="deletePunchReq(${r.id})">刪除</button>`}
         </div>
       </div>
       <div class="req-body">
@@ -14292,6 +14300,18 @@ async function reviewPunchReq(action) {
   const { ok } = await api(`/api/punch/requests/${id}`, apiPUT({ action, reviewed_by: by, review_note: note }));
   if (!ok) return;
   closePreqModal(); showToast(action==='approve' ? t('preq.approved') : t('preq.rejected'), 'success'); await loadPunchRequests();
+}
+async function revokePunchReq(id) {
+  const r = punchReqList.find(x => x.id === id); if (!r) return;
+  const by = prompt('撤銷核准會一併刪除該筆打卡紀錄，並把申請退回待審核。\n請輸入撤銷人姓名：', '');
+  if (by === null) return;
+  if (!by.trim()) { showToast('請填寫撤銷人', 'error'); return; }
+  const reason = prompt('撤銷原因（可留空）：', '') || '';
+  const { ok, data } = await api(`/api/punch/requests/${id}/revoke`,
+    apiJSON({ revoked_by: by.trim(), reason: reason.trim(), to_status: 'pending' }));
+  if (!ok) return;
+  showToast(`已撤銷核准，移除 ${((data&&data.removed_records)||[]).length} 筆打卡紀錄`, 'success');
+  await loadPunchRequests();
 }
 async function deletePunchReq(id) {
   if (!confirm(t('preq.confirm_delete'))) return;
@@ -15962,14 +15982,22 @@ function filterSalaryTable() {
       if (r.leave_days>0) anomalyBadge += `<span style="color:var(--accent);margin-left:4px">假${r.leave_days}天</span>`;
       anomalyBadge += '</div>';
     }
-    return `<tr${unaccounted>0?' style="background:rgba(214,66,66,0.04)"':''}>
+    const noBase = r.salary_type!=='hourly' && (r.allowance_total||0)===0 && (r.deduction_total||0)>0;
+    const negNet = (r.net_pay||0) < 0;
+    const warnTip = negNet
+      ? (noBase ? '實領為負數：本薪為 0（未勾選本薪、底薪未填、或個人金額設為 0），只有扣款沒有底薪' : '實領為負數，請檢查薪資項目設定')
+      : '';
+    const warnBadge = negNet
+      ? `<span title="${warnTip}" style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:10px;background:rgba(214,66,66,0.12);color:var(--red);font-size:10px;font-weight:700">${noBase?'本薪為0':'負數'}</span>`
+      : '';
+    return `<tr${(unaccounted>0||negNet)?' style="background:rgba(214,66,66,0.04)"':''}>
       <td style="font-family:'DM Mono',monospace;font-size:12px;color:var(--muted)">${escHtml(r.employee_code||'')}</td>
       <td style="font-weight:600">${escHtml(r.staff_name)}<span style="font-size:10px;color:var(--muted);margin-left:6px">${salTypeLabel}</span></td>
       <td style="color:var(--muted)">${escHtml(r.department||'')}</td>
       <td>${anomalyBadge}</td>
       <td style="font-family:'DM Mono',monospace;color:var(--green)">$${fmtNum(r.allowance_total)}</td>
       <td style="font-family:'DM Mono',monospace;color:var(--red)">-$${fmtNum(r.deduction_total)}</td>
-      <td style="font-family:'DM Mono',monospace;font-weight:700;color:var(--navy)">$${fmtNum(r.net_pay)}</td>
+      <td style="font-family:'DM Mono',monospace;font-weight:700;color:${negNet?'var(--red)':'var(--navy)'}">$${fmtNum(r.net_pay)}${warnBadge}</td>
       <td><span style="font-size:12px;font-weight:700;color:${sc}">${sl}</span></td>
       <td style="white-space:nowrap">
         <button class="btn btn-outline btn-sm" onclick="openSalDetail(${r.id})">明細</button>
@@ -16489,7 +16517,7 @@ async function loadSalaryItems() {
   const card = (it) => `<div class="card" style="margin-bottom:10px">
     <div class="card-header" style="flex-wrap:wrap;gap:8px;padding:12px 16px">
       <div>
-        <span style="font-size:14px;font-weight:700"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${it.color};margin-right:6px;vertical-align:middle"></span>${escHtml(it.name)}</span>
+        <span style="font-size:14px;font-weight:700"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${it.color};margin-right:6px;vertical-align:middle"></span>${escHtml(it.name)}${it.category==='non_wage'?' <span style="font-size:10px;font-weight:600;color:#fff;background:#64748b;border-radius:4px;padding:1px 6px;margin-left:4px">非工資·第三區塊</span>':''}</span>
         <div style="font-size:11px;color:var(--muted);margin-top:3px;font-family:'DM Mono',monospace">
           ${it.formula?'公式計算 '+escHtml(it.formula):`固定金額 $${fmtNum(it.amount)}`}
         </div>
@@ -16511,6 +16539,7 @@ function openSalaryItemModal(id=null) {
     const it = salaryItemsList.find(x=>x.id===id); if(!it) return;
     document.getElementById('sim-name').value    = it.name;
     document.getElementById('sim-type').value    = it.item_type;
+    document.getElementById('sim-category').value = it.category||'statutory';
     document.getElementById('sim-formula').value = it.formula||'';
     document.getElementById('sim-amount').value  = it.amount||0;
     document.getElementById('sim-color').value   = it.color||'#4a7bda';
@@ -16519,6 +16548,7 @@ function openSalaryItemModal(id=null) {
   } else {
     ['sim-name','sim-formula'].forEach(i=>document.getElementById(i).value='');
     document.getElementById('sim-type').value='allowance';
+    document.getElementById('sim-category').value='statutory';
     document.getElementById('sim-amount').value='0';
     document.getElementById('sim-color').value='#4a7bda';
     document.getElementById('sim-sort').value='0';
@@ -16532,6 +16562,7 @@ async function saveSalaryItem() {
   const body = {
     name:       document.getElementById('sim-name').value.trim(),
     item_type:  document.getElementById('sim-type').value,
+    category:   document.getElementById('sim-category').value,
     formula:    document.getElementById('sim-formula').value.trim(),
     amount:     parseFloat(document.getElementById('sim-amount').value)||0,
     color:      document.getElementById('sim-color').value,
