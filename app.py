@@ -1779,6 +1779,39 @@ def api_punch_summary():
     result.sort(key=lambda x: (x['work_date'], x['staff_name']), reverse=True)
     return jsonify(result)
 
+def _monthly_ot_stats(conn, month):
+    """當月每位在職員工的加班統計 {staff_id: {...}}。
+    日期基準與薪資計算一致：加班日期優先，未填才用申請日期。"""
+    from datetime import date as _d_ot, timedelta as _td_ot
+    import calendar as _cal_ot
+    _y, _m = int(month[:4]), int(month[5:])
+    _start = f"{month}-01"
+    _end   = (_d_ot(_y, _m, _cal_ot.monthrange(_y, _m)[1]) + _td_ot(days=1)).isoformat()
+    rows = conn.execute("""
+        SELECT ps.id AS staff_id, ps.name AS staff_name, ps.department, ps.role,
+               COALESCE(SUM(CASE WHEN r.status='approved' THEN r.ot_hours END), 0) AS approved_hours,
+               COALESCE(SUM(CASE WHEN r.status='approved' THEN r.ot_pay   END), 0) AS approved_pay,
+               COUNT(CASE WHEN r.status='approved' THEN 1 END)                     AS approved_count,
+               COALESCE(SUM(CASE WHEN r.status='pending'  THEN r.ot_hours END), 0) AS pending_hours,
+               COUNT(CASE WHEN r.status='pending'  THEN 1 END)                     AS pending_count
+        FROM overtime_requests r
+        JOIN punch_staff ps ON ps.id = r.staff_id AND ps.active = TRUE
+        WHERE COALESCE(r.ot_date, r.request_date) >= %s::date
+          AND COALESCE(r.ot_date, r.request_date) <  %s::date
+        GROUP BY ps.id, ps.name, ps.department, ps.role
+    """, (_start, _end)).fetchall()
+    return {r['staff_id']: {
+        'staff_name':        r['staff_name'],
+        'department':        r['department'] or '',
+        'role':              r['role'] or '',
+        'ot_approved_hours': float(r['approved_hours']),
+        'ot_approved_pay':   float(r['approved_pay']),
+        'ot_approved_count': r['approved_count'],
+        'ot_pending_hours':  float(r['pending_hours']),
+        'ot_pending_count':  r['pending_count'],
+    } for r in rows}
+
+
 @app.route('/api/attendance/monthly-stats', methods=['GET'])
 @login_required
 def api_attendance_monthly_stats():
@@ -1825,6 +1858,8 @@ def api_attendance_monthly_stats():
             WHERE sa.shift_date >= %s::date AND sa.shift_date < %s::date
         """, (_month_start3, _shift_end3)).fetchall()
         shift_map = {(r['staff_id'], str(r['shift_date'])): r for r in shift_rows}
+
+        ot_map = _monthly_ot_stats(conn, month)
 
     # 建立 (staff_id, date_str) → row_dict，並合併跨日班次
     day_map = {}
@@ -1920,8 +1955,22 @@ def api_attendance_monthly_stats():
                 except Exception:
                     pass
 
+    # 併入加班統計；當月沒有打卡但有加班申請的員工也列出，避免加班被漏看
+    for sid, ot in ot_map.items():
+        s = stats[sid]
+        if s['staff_id'] is None:
+            s['staff_id']   = sid
+            s['staff_name'] = ot['staff_name']
+            s['department'] = ot['department']
+            s['role']       = ot['role']
+        s.update({k: v for k, v in ot.items() if k.startswith('ot_')})
+
     result = []
     for s in sorted(stats.values(), key=lambda x: (x['department'], x['staff_name'])):
+        for k in ('ot_approved_hours', 'ot_approved_pay', 'ot_pending_hours'):
+            s.setdefault(k, 0.0)
+        for k in ('ot_approved_count', 'ot_pending_count'):
+            s.setdefault(k, 0)
         h   = s['total_minutes'] // 60
         m   = s['total_minutes'] % 60
         avg = round(s['total_minutes'] / s['days_worked'] / 60, 1) if s['days_worked'] else 0
@@ -13851,6 +13900,19 @@ def api_export_attendance_summary_excel():
 
 
 # ── 3. 月統計 Excel ───────────────────────────────────────────────────────────
+def _merge_ot_into_export_stats(stats, ot_map):
+    """把加班統計併入匯出用的 stats；沒有打卡但有加班的員工也補一列。"""
+    for sid, ot in ot_map.items():
+        if sid not in stats:
+            stats[sid] = {'name': ot['staff_name'], 'dept': ot['department'], 'role': ot['role'],
+                          'days': 0, 'hours': 0.0, 'late': 0, 'early': 0, 'missing': 0}
+    for sid, s in stats.items():
+        ot = ot_map.get(sid, {})
+        s['ot_hours']   = round(ot.get('ot_approved_hours', 0.0), 2)
+        s['ot_pay']     = ot.get('ot_approved_pay', 0.0)
+        s['ot_pending'] = round(ot.get('ot_pending_hours', 0.0), 2)
+
+
 @app.route('/api/export/monthly-stats-excel', methods=['GET'])
 @login_required
 def api_export_monthly_stats_excel():
@@ -13881,6 +13943,7 @@ def api_export_monthly_stats_excel():
             FROM shift_assignments sa JOIN shift_types st ON st.id=sa.shift_type_id
             WHERE TO_CHAR(sa.shift_date,'YYYY-MM')=%s
         """, (month,)).fetchall()
+        ot_map = _monthly_ot_stats(conn, month)
     from datetime import date as _da
     shift_map = {(r['staff_id'], str(r['shift_date'])): r for r in shift_rows}
     # Aggregate by staff
@@ -13908,14 +13971,17 @@ def api_export_monthly_stats_excel():
             try:
                 if (int(sh_e[:2])*60+int(sh_e[3:])) - (int(co_t[:2])*60+int(co_t[3:])) > 15: s['early'] += 1
             except: pass
+    _merge_ot_into_export_stats(stats, ot_map)
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = f'{month} 月統計'
-    headers = ['姓名','部門','職稱','出勤天數','總工時(h)','平均時數/天','遲到次數','早退次數','缺打卡次數']
-    col_w   = [12, 10, 10, 10, 10, 12, 10, 10, 10]
+    headers = ['姓名','部門','職稱','出勤天數','總工時(h)','平均時數/天','遲到次數','早退次數','缺打卡次數',
+               '加班時數(已核准)','加班費','待審加班時數']
+    col_w   = [12, 10, 10, 10, 10, 12, 10, 10, 10, 14, 10, 12]
     _xl_write_header(ws, headers, col_w)
     data = []
     for s in stats.values():
         avg = round(s['hours'] / s['days'], 2) if s['days'] else 0
-        data.append([s['name'], s['dept'], s['role'], s['days'], round(s['hours'],2), avg, s['late'], s['early'], s['missing']])
+        data.append([s['name'], s['dept'], s['role'], s['days'], round(s['hours'],2), avg, s['late'], s['early'], s['missing'],
+                     s['ot_hours'], round(s['ot_pay']), s['ot_pending']])
     _xl_write_rows(ws, data)
     return _xl_response(wb, f'monthly_stats_{month}.xlsx')
 
@@ -14568,6 +14634,7 @@ def api_export_monthly_stats_pdf():
             FROM shift_assignments sa JOIN shift_types st ON st.id=sa.shift_type_id
             WHERE TO_CHAR(sa.shift_date,'YYYY-MM')=%s
         """, (month,)).fetchall()
+        ot_map = _monthly_ot_stats(conn, month)
     from datetime import date as _da
     shift_map = {(r['staff_id'], str(r['shift_date'])): r for r in shift_rows}
     stats = {}
@@ -14593,12 +14660,15 @@ def api_export_monthly_stats_pdf():
             try:
                 if (int(sh_e[:2])*60+int(sh_e[3:])) - (int(co_t[:2])*60+int(co_t[3:])) > 15: s['early'] += 1
             except: pass
-    headers = ['姓名','部門','職稱','出勤天數','總工時(h)','平均時數/天','遲到次數','早退次數','缺打卡次數']
-    col_w   = [16, 14, 14, 12, 12, 14, 12, 12, 12]
+    _merge_ot_into_export_stats(stats, ot_map)
+    headers = ['姓名','部門','職稱','出勤天數','總工時(h)','平均時數/天','遲到次數','早退次數','缺打卡次數',
+               '加班時數','加班費','待審加班']
+    col_w   = [14, 12, 12, 10, 10, 12, 10, 10, 10, 11, 11, 11]
     data = []
     for s in stats.values():
         avg = round(s['hours'] / s['days'], 2) if s['days'] else 0
-        data.append([s['name'], s['dept'], s['role'], s['days'], round(s['hours'],2), avg, s['late'], s['early'], s['missing']])
+        data.append([s['name'], s['dept'], s['role'], s['days'], round(s['hours'],2), avg, s['late'], s['early'], s['missing'],
+                     s['ot_hours'], round(s['ot_pay']), s['ot_pending']])
     pdf = _build_table_pdf(f'{month} 月出勤統計', headers, data, col_w, landscape=True)
     return _make_pdf_response(pdf, f'monthly_stats_{month}.pdf')
 
