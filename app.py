@@ -4358,6 +4358,25 @@ def api_ot_admin_list():
     ])
 
 
+# 休息日加班第 9～12 小時適用 2.67 倍（勞基法第 24 條第 2 項）
+OT_RATE3 = 2.67
+
+
+def _ot_tier_hours(ot_hours, day_type='weekday'):
+    """加班時數分段 (前2小時, 第3小時起, 第9小時起)。
+
+    休息日自 2018-03-01 修法後核實計算（做幾小時給幾小時，無 4 小時下限），
+    並於第 9 小時起適用 2.67 倍；國定假日／例假日全程 2 倍不分段。
+    """
+    h = float(ot_hours or 0)
+    if day_type in ('holiday', 'special'):
+        return 0.0, 0.0, 0.0
+    h1 = min(h, 2.0)
+    if day_type == 'rest_day':
+        return h1, max(0.0, min(h, 8.0) - 2.0), max(0.0, h - 8.0)
+    return h1, max(0.0, h - 2.0), 0.0
+
+
 def _calc_ot_pay(staff_row, ot_hours, day_type='weekday'):
     salary_type = staff_row.get('salary_type', 'monthly') or 'monthly'
     base_salary = float(staff_row.get('base_salary')  or 0)
@@ -4379,13 +4398,9 @@ def _calc_ot_pay(staff_row, ot_hours, day_type='weekday'):
     h = float(ot_hours)
     if day_type in ('holiday', 'special'):
         pay = round(base_hourly * h * 2.0, 0)
-    elif day_type == 'rest_day':
-        billed = max(h, 4.0)
-        h1  = min(billed, 2.0); h2  = max(0.0, billed - 2.0)
-        pay = round(base_hourly * (h1 * ot_rate1 + h2 * ot_rate2), 0)
     else:
-        h1  = min(h, 2.0); h2  = max(0.0, h - 2.0)
-        pay = round(base_hourly * (h1 * ot_rate1 + h2 * ot_rate2), 0)
+        h1, h2, h3 = _ot_tier_hours(h, day_type)
+        pay = round(base_hourly * (h1 * ot_rate1 + h2 * ot_rate2 + h3 * OT_RATE3), 0)
 
     return pay, base_hourly
 
@@ -4583,12 +4598,10 @@ def api_ot_calc_preview():
     day_type     = b.get('day_type', 'weekday') or 'weekday'
     ot_pay, base_hourly = _calc_ot_pay(staff, ot_hours, day_type)
 
-    if day_type == 'rest_day':
-        billed = max(ot_hours, 4.0); h1 = min(billed, 2.0); h2 = max(0.0, billed - 2.0)
-    elif day_type in ('holiday', 'special'):
-        h1 = ot_hours; h2 = 0.0
+    if day_type in ('holiday', 'special'):
+        h1, h2, h3 = ot_hours, 0.0, 0.0
     else:
-        h1 = min(ot_hours, 2.0); h2 = max(0.0, ot_hours - 2.0)
+        h1, h2, h3 = _ot_tier_hours(ot_hours, day_type)
 
     return jsonify({
         'staff_name':  staff['name'],
@@ -4600,8 +4613,10 @@ def api_ot_calc_preview():
         'day_type':    day_type,
         'h1':          h1,
         'h2':          h2,
+        'h3':          h3,
         'ot_rate1':    float(staff.get('ot_rate1') or 1.34),
         'ot_rate2':    float(staff.get('ot_rate2') or 1.67),
+        'ot_rate3':    OT_RATE3,
         'ot_pay':      ot_pay,
     })
 
@@ -20790,13 +20805,14 @@ def _ot_tier_breakdown(conn, staff_id, month, rates, total_ot_pay):
         elif dt == 'special':
             _add('special', f'例假日加班（{_rate_fmt(rs)}倍）', h, h * rs)
         else:
-            if dt == 'rest_day':
-                billed = max(h, 4.0); pfx = '休息日加班'
-            else:
-                billed = h; pfx = '平日加班'
-            h1 = min(billed, 2.0); h2 = max(0.0, billed - 2.0)
+            pfx = '休息日加班' if dt == 'rest_day' else '平日加班'
+            h1, h2, h3 = _ot_tier_hours(h, dt)
             if h1 > 0: _add(pfx + '1', f'{pfx}（前2小時·{_rate_fmt(r1)}倍）', h1, h1 * r1)
-            if h2 > 0: _add(pfx + '2', f'{pfx}（第3小時起·{_rate_fmt(r2)}倍）', h2, h2 * r2)
+            if h2 > 0:
+                _label = f'{pfx}（第3~8小時·{_rate_fmt(r2)}倍）' if dt == 'rest_day' \
+                         else f'{pfx}（第3小時起·{_rate_fmt(r2)}倍）'
+                _add(pfx + '2', _label, h2, h2 * r2)
+            if h3 > 0: _add(pfx + '3', f'{pfx}（第9小時起·{_rate_fmt(OT_RATE3)}倍）', h3, h3 * OT_RATE3)
     vals = list(buckets.values())
     if not vals:
         # 有加班費但查無核准申請明細（例如時薪制由打卡估算）→ 併為單行

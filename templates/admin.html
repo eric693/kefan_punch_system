@@ -14572,7 +14572,8 @@ async function openOTReview(id) {
     const typeLabel = pd.salary_type==='hourly'?t('opt.hourly_wage'):(pd.salary_type==='daily'?'日薪制':t('opt.monthly_salary'));
     let detail = `${typeLabel}　時薪 $${pd.base_hourly}/h<br>`;
     if (pd.h1 > 0) detail += `前 ${pd.h1}h × ${pd.ot_rate1} = $${Math.round(pd.base_hourly*pd.h1*pd.ot_rate1)}<br>`;
-    if (pd.h2 > 0) detail += `後 ${pd.h2}h × ${pd.ot_rate2} = $${Math.round(pd.base_hourly*pd.h2*pd.ot_rate2)}`;
+    if (pd.h2 > 0) detail += `${pd.h3 > 0 ? '第 3~8h' : '後'} ${pd.h2}h × ${pd.ot_rate2} = $${Math.round(pd.base_hourly*pd.h2*pd.ot_rate2)}<br>`;
+    if (pd.h3 > 0) detail += `第 9h 起 ${pd.h3}h × ${pd.ot_rate3} = $${Math.round(pd.base_hourly*pd.h3*pd.ot_rate3)}`;
     document.getElementById('otrm-pay-detail').innerHTML = detail;
     document.getElementById('otrm-pay-amount').textContent = `$${Number(pd.ot_pay).toLocaleString()}`;
     prevEl.style.display = '';
