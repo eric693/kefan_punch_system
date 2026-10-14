@@ -2492,12 +2492,12 @@ _LINE_TMPL = {
         'id': ' {name}\nTidak ada catatan gaji.',
     },
     'salary_body': {
-        'zh-TW': ' {name} {month} 薪資\n\n底薪：NT$ {base:,.0f}\n津貼：NT$ {allow:,.0f}\n加班費：NT$ {ot:,.0f}\n扣除：NT$ {ded:,.0f}\n━━━━━━━━━━━━\n實領：NT$ {net:,.0f}\n出勤：{actual}/{work} 天\n狀態：{status}{comp}\n\n詳細資訊請至員工系統薪資單查看。',
-        'en': ' {name} {month} Salary\n\nBase: NT$ {base:,.0f}\nAllowance: NT$ {allow:,.0f}\nOvertime: NT$ {ot:,.0f}\nDeductions: NT$ {ded:,.0f}\n━━━━━━━━━━━━\nNet Pay: NT$ {net:,.0f}\nAttendance: {actual}/{work} days\nStatus: {status}{comp}\n\nFor details, check the payslip in the employee system.',
-        'ja': ' {name} {month} 給与\n\n基本給：NT$ {base:,.0f}\n手当：NT$ {allow:,.0f}\n残業代：NT$ {ot:,.0f}\n控除：NT$ {ded:,.0f}\n━━━━━━━━━━━━\n手取り：NT$ {net:,.0f}\n出勤：{actual}/{work}日\n状態：{status}{comp}\n\n詳細は従業員システムの給与明細をご確認ください。',
-        'vi': ' Lương {month} của {name}\n\nLương cơ bản: NT$ {base:,.0f}\nPhụ cấp: NT$ {allow:,.0f}\nThêm giờ: NT$ {ot:,.0f}\nKhấu trừ: NT$ {ded:,.0f}\n━━━━━━━━━━━━\nThực lĩnh: NT$ {net:,.0f}\nChuyên cần: {actual}/{work} ngày\nTrạng thái: {status}{comp}\n\nXem chi tiết trong phiếu lương trên hệ thống.',
-        'th': ' เงินเดือน {month} ของ {name}\n\nเงินเดือนพื้นฐาน: NT$ {base:,.0f}\nเบี้ยเลี้ยง: NT$ {allow:,.0f}\nค่าล่วงเวลา: NT$ {ot:,.0f}\nหักออก: NT$ {ded:,.0f}\n━━━━━━━━━━━━\nรับจริง: NT$ {net:,.0f}\nเข้างาน: {actual}/{work} วัน\nสถานะ: {status}{comp}\n\nดูรายละเอียดในสลิปเงินเดือนในระบบพนักงาน',
-        'id': ' Gaji {month} untuk {name}\n\nGaji Pokok: NT$ {base:,.0f}\nTunjangan: NT$ {allow:,.0f}\nLembur: NT$ {ot:,.0f}\nPotongan: NT$ {ded:,.0f}\n━━━━━━━━━━━━\nGaji Bersih: NT$ {net:,.0f}\nKehadiran: {actual}/{work} hari\nStatus: {status}{comp}\n\nUntuk detail, lihat slip gaji di sistem karyawan.',
+        'zh-TW': ' {name} {month} 薪資\n\n底薪：NT$ {base:,.0f}\n其他津貼：NT$ {allow:,.0f}\n加班費：NT$ {ot:,.0f}\n扣除：NT$ {ded:,.0f}\n━━━━━━━━━━━━\n實領：NT$ {net:,.0f}\n出勤：{actual}/{work} 天\n狀態：{status}{comp}\n\n詳細資訊請至員工系統薪資單查看。',
+        'en': ' {name} {month} Salary\n\nBase: NT$ {base:,.0f}\nOther Allow.: NT$ {allow:,.0f}\nOvertime: NT$ {ot:,.0f}\nDeductions: NT$ {ded:,.0f}\n━━━━━━━━━━━━\nNet Pay: NT$ {net:,.0f}\nAttendance: {actual}/{work} days\nStatus: {status}{comp}\n\nFor details, check the payslip in the employee system.',
+        'ja': ' {name} {month} 給与\n\n基本給：NT$ {base:,.0f}\nその他手当：NT$ {allow:,.0f}\n残業代：NT$ {ot:,.0f}\n控除：NT$ {ded:,.0f}\n━━━━━━━━━━━━\n手取り：NT$ {net:,.0f}\n出勤：{actual}/{work}日\n状態：{status}{comp}\n\n詳細は従業員システムの給与明細をご確認ください。',
+        'vi': ' Lương {month} của {name}\n\nLương cơ bản: NT$ {base:,.0f}\nPhụ cấp khác: NT$ {allow:,.0f}\nThêm giờ: NT$ {ot:,.0f}\nKhấu trừ: NT$ {ded:,.0f}\n━━━━━━━━━━━━\nThực lĩnh: NT$ {net:,.0f}\nChuyên cần: {actual}/{work} ngày\nTrạng thái: {status}{comp}\n\nXem chi tiết trong phiếu lương trên hệ thống.',
+        'th': ' เงินเดือน {month} ของ {name}\n\nเงินเดือนพื้นฐาน: NT$ {base:,.0f}\nเบี้ยเลี้ยงอื่น: NT$ {allow:,.0f}\nค่าล่วงเวลา: NT$ {ot:,.0f}\nหักออก: NT$ {ded:,.0f}\n━━━━━━━━━━━━\nรับจริง: NT$ {net:,.0f}\nเข้างาน: {actual}/{work} วัน\nสถานะ: {status}{comp}\n\nดูรายละเอียดในสลิปเงินเดือนในระบบพนักงาน',
+        'id': ' Gaji {month} untuk {name}\n\nGaji Pokok: NT$ {base:,.0f}\nTunjangan Lain: NT$ {allow:,.0f}\nLembur: NT$ {ot:,.0f}\nPotongan: NT$ {ded:,.0f}\n━━━━━━━━━━━━\nGaji Bersih: NT$ {net:,.0f}\nKehadiran: {actual}/{work} hari\nStatus: {status}{comp}\n\nUntuk detail, lihat slip gaji di sistem karyawan.',
     },
     'salary_comp_bal': {
         'zh-TW': '\n補休餘額：{remain} 天（{year}年）',

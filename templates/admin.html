@@ -5758,6 +5758,8 @@ tbody td.date-cell { font-family: 'Noto Sans TC', sans-serif; font-weight: 500; 
         <div class="form-group"><label class="form-label">排休配額（天/月）</label><input class="form-input" type="number" id="ssm-vq" placeholder="空白=使用月份預設"></div>
         <div class="form-group"><label class="form-label">加班費率 1（前 2h）</label><input class="form-input" type="number" id="ssm-ot1" value="1.33" step="0.01"></div>
         <div class="form-group"><label class="form-label">加班費率 2（後續時數）</label><input class="form-input" type="number" id="ssm-ot2" value="1.67" step="0.01"></div>
+        <div class="form-group"><label class="form-label">加班費率 國定假日</label><input class="form-input" type="number" id="ssm-ot-holiday" value="2.0" step="0.01"></div>
+        <div class="form-group"><label class="form-label">加班費率 例假日</label><input class="form-input" type="number" id="ssm-ot-special" value="2.0" step="0.01"></div>
         <div class="form-group"><label class="form-label">每日餐費補貼（元）</label><input class="form-input" type="number" id="ssm-meal" value="0" min="0" placeholder="0 = 不發放"></div>
         <div class="form-group"><label class="form-label">每日司機補貼（元）</label><input class="form-input" type="number" id="ssm-driver" value="0" min="0" placeholder="0 = 不適用"></div>
         <div class="form-group full-width"><label class="form-label">薪資備註</label><input class="form-input" id="ssm-notes" placeholder="選填"></div>
@@ -16383,6 +16385,8 @@ function openSalStaffModal(id) {
   document.getElementById('ssm-daily-h').value  = s.daily_hours||8;
   document.getElementById('ssm-ot1').value      = s.ot_rate1||1.33;
   document.getElementById('ssm-ot2').value      = s.ot_rate2||1.67;
+  document.getElementById('ssm-ot-holiday').value = s.ot_rate_holiday||2.0;
+  document.getElementById('ssm-ot-special').value = s.ot_rate_special||2.0;
   document.getElementById('ssm-meal').value     = s.meal_allowance||0;
   document.getElementById('ssm-driver').value   = s.driver_allowance||0;
   document.getElementById('ssm-vq').value          = s.vacation_quota!=null?s.vacation_quota:'';
@@ -16493,6 +16497,8 @@ async function saveSalStaff() {
     daily_hours:   parseFloat(document.getElementById('ssm-daily-h').value)||8,
     ot_rate1:        parseFloat(document.getElementById('ssm-ot1').value)||1.33,
     ot_rate2:        parseFloat(document.getElementById('ssm-ot2').value)||1.67,
+    ot_rate_holiday: parseFloat(document.getElementById('ssm-ot-holiday').value)||2.0,
+    ot_rate_special: parseFloat(document.getElementById('ssm-ot-special').value)||2.0,
     meal_allowance:  parseFloat(document.getElementById('ssm-meal').value)||0,
     driver_allowance:parseFloat(document.getElementById('ssm-driver').value)||0,
     vacation_quota:document.getElementById('ssm-vq').value?parseInt(document.getElementById('ssm-vq').value):null,
@@ -19821,7 +19827,7 @@ function filterStoreList() {
         <td>
           <button class="btn btn-sm" onclick="openStoreModal(${JSON.stringify(s).replace(/"/g,'&quot;')})">${t('btn.edit')}</button>
           <button class="btn btn-sm" onclick="loadStoreStaff(${s.id})">${t('btn.view_staff')}</button>
-          <button class="btn btn-sm" style="background:var(--red-light);color:var(--red);border-color:var(--red)" onclick="deleteStore(${s.id})">${t('btn.delete')}</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteStore(${s.id})">${t('btn.delete')}</button>
         </td>
       </tr>`).join('');
 }

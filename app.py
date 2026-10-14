@@ -618,7 +618,8 @@ def _annual_leave_sync_loop():
         _run_annual_leave_sync()
 
 
-threading.Thread(target=_annual_leave_sync_loop, daemon=True).start()
+# 注意：執行緒啟動放在檔案最末端。這裡是模組載入初期，_calc_annual_leave_days
+# 尚未定義，若在此啟動，首次同步必定 NameError。
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
@@ -2912,15 +2913,18 @@ def _do_line_punch(staff, user_id, lat, lng, forced_type, PUNCH_LABEL):
 
     now      = _dt3.now(TW)
     gps_info = f'\n📍 {matched_name} ({gps_distance}m)' if gps_distance is not None else ''
-    _send_line_punch(user_id, _lmsg('punch_success', _lang(),
-        label=label, name=staff['name'],
-        time=now.strftime('%Y/%m/%d %H:%M'), gps=gps_info))
 
-    # 打卡成功後附上當日薪資預估（下班打卡或有打卡紀錄時才顯示）
+    # 把成功訊息、薪資預估、司機補貼申請合併成最多 5 則，用單一 reply 發出（不耗 Push 配額）
+    _reply_msgs = []
+    _reply_msgs.append({'type': 'text', 'text': _i18n_translate(
+        _lmsg('punch_success', _lang(), label=label, name=staff['name'],
+              time=now.strftime('%Y/%m/%d %H:%M'), gps=gps_info), _lang())})
+
+    # 薪資預估
     try:
         pay = _calc_today_pay(staff)
         if pay['has_in']:
-            lines = ['', '─────────────────', '當日薪資預估']
+            lines = ['─────────────────', '當日薪資預估']
             if pay['hours_worked'] > 0:
                 lines.append(f'  工時：{pay["hours_worked"]}h')
             lines.append(f'  基本日薪：${int(pay["daily_pay"]):,}')
@@ -2933,33 +2937,35 @@ def _do_line_punch(staff, user_id, lat, lng, forced_type, PUNCH_LABEL):
             lines.append(f'  小計：${int(pay["total"]):,}')
             if not pay['has_out']:
                 lines.append('  （尚未下班，僅供參考）')
-            _send_line_punch(user_id, '\n'.join(lines))
+            _reply_msgs.append({'type': 'text', 'text': '\n'.join(lines)})
     except Exception:
         pass
 
-    # 開車去/開車回打卡後詢問是否申請司機補貼
+    # 司機補貼申請（開車去/開車回）
+    _drv_msg = None
     if punch_type in ('break_out', 'break_in') and new_punch_id:
         try:
-            with get_db() as conn:
-                already = conn.execute(
-                    "SELECT id FROM driver_allowance_requests WHERE punch_id=%s",
-                    (new_punch_id,)
+            with get_db() as _dconn:
+                _already = _dconn.execute(
+                    "SELECT id FROM driver_allowance_requests WHERE punch_id=%s", (new_punch_id,)
                 ).fetchone()
-            if not already:
-                lang = _lang()
-                direction_label = _lmsg('label_break_out', lang) if punch_type == 'break_out' else _lmsg('label_break_in', lang)
-                with get_db() as _cfg_conn:
-                    _cfg = _cfg_conn.execute("SELECT driver_allowance_amount FROM punch_config WHERE id=1").fetchone()
-                _da_amt = int(float(_cfg['driver_allowance_amount'] or 125)) if _cfg else 125
-                msg = _flex_ask('司機補貼申請', '#1A6B3C',
-                    f'剛完成「{direction_label}」打卡，要申請司機補貼 ${_da_amt} 嗎？', '審核通過後加入當月薪資')
-                msg['quickReply'] = _qr_pb(
+                _cfg2 = _dconn.execute("SELECT driver_allowance_amount FROM punch_config WHERE id=1").fetchone()
+            if not _already:
+                _lang2 = _lang()
+                _dir_label = _lmsg('label_break_out', _lang2) if punch_type == 'break_out' else _lmsg('label_break_in', _lang2)
+                _da_amt = int(float(_cfg2['driver_allowance_amount'] or 125)) if _cfg2 else 125
+                _drv_msg = _flex_ask('司機補貼申請', '#1A6B3C',
+                    f'剛完成「{_dir_label}」打卡，要申請司機補貼 ${_da_amt} 嗎？', '審核通過後加入當月薪資')
+                _drv_msg['quickReply'] = _qr_pb(
                     (f'申請 ${_da_amt}', f'driver_allw_apply&punch_id={new_punch_id}', '申請司機補貼'),
                     ('不用了', f'driver_allw_skip', '不申請'),
                 )
-                _push_line_msg(user_id, msg)
+                _reply_msgs.append(_drv_msg)
         except Exception:
             pass
+
+    # 用 reply API（免費）一次送出所有訊息（最多 5 則）
+    _push_line_msg(user_id, *_reply_msgs[:5])
 
 
 def _calc_today_pay(staff):
@@ -2975,46 +2981,51 @@ def _calc_today_pay(staff):
     """
     from datetime import datetime as _dt5, timezone as _tz5, timedelta as _td5
     TW5 = _tz5(_td5(hours=8))
-    today_str = _dt5.now(TW5).strftime('%Y-%m-%d')
+    today = _dt5.now(TW5).date()
+    win_start = (today - _td5(days=1)).isoformat()
+    win_end   = (today + _td5(days=2)).isoformat()
 
     with get_db() as conn:
         rows = conn.execute("""
             SELECT punch_type, punched_at
             FROM punch_records
             WHERE staff_id=%s
-              AND (punched_at AT TIME ZONE 'Asia/Taipei')::date = %s::date
+              AND punched_at AT TIME ZONE 'Asia/Taipei' >= %s::date
+              AND punched_at AT TIME ZONE 'Asia/Taipei' <  %s::date
               AND deleted_at IS NULL
             ORDER BY punched_at ASC
-        """, (staff['id'], today_str)).fetchall()
+        """, (staff['id'], win_start, win_end)).fetchall()
 
-    ins      = []
-    outs     = []
-    b_outs   = []
-    b_ins    = []
+    # 轉成 (type, tz-aware dt)
+    parsed = []
     for r in rows:
         pa = r['punched_at']
         if pa.tzinfo is None:
             pa = pa.replace(tzinfo=_tz5.utc)
-        pa = pa.astimezone(TW5)
-        pt = r['punch_type']
-        if pt == 'in':        ins.append(pa)
-        elif pt == 'out':     outs.append(pa)
-        elif pt == 'break_out': b_outs.append(pa)
-        elif pt == 'break_in':  b_ins.append(pa)
+        parsed.append((r['punch_type'], pa.astimezone(TW5)))
 
-    has_in = bool(ins)
+    # 以「進場日」歸班次：非 in 打卡在最近一次 in 的 24h 內 → 歸該 in 當天（支援跨午夜）
+    day_map = {}
+    last_in_ds = None
+    last_in_dt = None
+    for ptype, dt in parsed:
+        ds = dt.strftime('%Y-%m-%d')
+        if ptype == 'in':
+            last_in_ds, last_in_dt, target = ds, dt, ds
+        elif last_in_ds and last_in_dt and (dt - last_in_dt).total_seconds() <= 86400:
+            target = last_in_ds
+        else:
+            target = ds
+        day_map.setdefault(target, []).append((ptype, dt))
 
-    # 計算工時
-    hours_worked = 0.0
-    if ins and outs:
-        gross_mins = (max(outs) - min(ins)).total_seconds() / 60
-        break_mins = 0.0
-        for bo in b_outs:
-            matched = [bi for bi in b_ins if bi > bo]
-            if matched:
-                break_mins += (min(matched) - bo).total_seconds() / 60
-        net_mins     = max(0.0, gross_mins - break_mins)
-        hours_worked = round(net_mins / 60, 2)
+    # 取「今天有打卡活動」的班次（含半夜剛下班的跨日班次）；若有多個取最新一段
+    cand = {ds: g for ds, g in day_map.items() if any(p[1].date() == today for p in g)}
+    grp  = max(cand.values(), key=lambda g: max(p[1] for p in g)) if cand else []
+
+    res          = _pair_work_minutes(grp)
+    has_in       = res['has_in']
+    has_out      = res['has_out']
+    hours_worked = round(res['net_minutes'] / 60, 2)
 
     salary_type  = staff.get('salary_type') or 'monthly'
     daily_hours  = float(staff.get('daily_hours') or 8)
@@ -3053,7 +3064,7 @@ def _calc_today_pay(staff):
         'driver':       driver,
         'total':        total,
         'has_in':       has_in,
-        'has_out':      bool(outs),
+        'has_out':      has_out,
     }
 
 
@@ -4366,7 +4377,7 @@ def _ot_tier_hours(ot_hours, day_type='weekday'):
     """加班時數分段 (前2小時, 第3小時起, 第9小時起)。
 
     休息日自 2018-03-01 修法後核實計算（做幾小時給幾小時，無 4 小時下限），
-    並於第 9 小時起適用 2.67 倍；國定假日／例假日全程 2 倍不分段。
+    並於第 9 小時起適用 2.67 倍；國定假日／例假日全程倍率計算，不分段。
     """
     h = float(ot_hours or 0)
     if day_type in ('holiday', 'special'):
@@ -4384,6 +4395,8 @@ def _calc_ot_pay(staff_row, ot_hours, day_type='weekday'):
     daily_hours = float(staff_row.get('daily_hours')  or 8)
     ot_rate1    = float(staff_row.get('ot_rate1')     or 1.34)
     ot_rate2    = float(staff_row.get('ot_rate2')     or 1.67)
+    ot_rate_holiday = float(staff_row.get('ot_rate_holiday') or 2.0)
+    ot_rate_special = float(staff_row.get('ot_rate_special') or 2.0)
 
     if salary_type == 'hourly':
         base_hourly = hourly_rate
@@ -4396,9 +4409,13 @@ def _calc_ot_pay(staff_row, ot_hours, day_type='weekday'):
         return 0.0, base_hourly
 
     h = float(ot_hours)
-    if day_type in ('holiday', 'special'):
-        pay = round(base_hourly * h * 2.0, 0)
+    if day_type == 'holiday':
+        pay = round(base_hourly * h * ot_rate_holiday, 0)
+    elif day_type == 'special':
+        pay = round(base_hourly * h * ot_rate_special, 0)
     else:
+        # 休息日倍率與平日相同；2018-03-01 修法後已取消「做1給4」的擬制工時，核實計算，
+        # 第 9 小時起另適用 2.67 倍
         h1, h2, h3 = _ot_tier_hours(h, day_type)
         pay = round(base_hourly * (h1 * ot_rate1 + h2 * ot_rate2 + h3 * OT_RATE3), 0)
 
@@ -4463,7 +4480,7 @@ def api_ot_review(rid):
         if action == 'approve':
             staff = conn.execute("""
                 SELECT base_salary, hourly_rate, daily_hours,
-                       ot_rate1, ot_rate2, salary_type
+                       ot_rate1, ot_rate2, ot_rate_holiday, ot_rate_special, salary_type
                 FROM punch_staff WHERE id=%s
             """, (req['staff_id'],)).fetchone()
             if staff:
@@ -4591,7 +4608,7 @@ def api_ot_calc_preview():
     with get_db() as conn:
         staff = conn.execute("""
             SELECT name, base_salary, hourly_rate, daily_hours,
-                   ot_rate1, ot_rate2, salary_type
+                   ot_rate1, ot_rate2, ot_rate_holiday, ot_rate_special, salary_type
             FROM punch_staff WHERE id=%s
         """, (staff_id,)).fetchone()
     if not staff: return ('', 404)
@@ -5730,7 +5747,7 @@ def init_salary_db():
     except Exception as e:
         print(f"[salary_seed] {e}")
 
-    # 依薪資單三區塊版面，補齊法定／非工資項目（idempotent，依名稱判斷）
+    # 依薪資單三區塊版面，補齊截圖中的法定／非工資項目（idempotent，依名稱判斷）
     # (name, item_type, category, sort_order)
     payslip_items = [
         # 第一區塊：勞基法法定工資項目（statutory / 加項）
@@ -5769,6 +5786,17 @@ def init_salary_config_db():
                     updated_at  TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            # 舊版資料表只有 settlement_day / pay_day，缺 payroll_day 會讓整段初始化失敗
+            conn.execute("ALTER TABLE salary_config ADD COLUMN IF NOT EXISTS payroll_day INT DEFAULT 5")
+            conn.execute("ALTER TABLE salary_config ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()")
+            has_pay_day = conn.execute("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='salary_config' AND column_name='pay_day'
+            """).fetchone()
+            if has_pay_day:
+                # 沿用舊欄位已設定的發薪日，避免升級後被重設為預設值
+                conn.execute("UPDATE salary_config SET payroll_day=pay_day "
+                             "WHERE payroll_day IS NULL AND pay_day IS NOT NULL")
             conn.execute("""
                 INSERT INTO salary_config (id, payroll_day)
                 VALUES (1, 5) ON CONFLICT (id) DO NOTHING
@@ -5891,6 +5919,61 @@ def _clip_leave_to_month(ls, le, month_start, month_end_exclusive, scheduled_dat
         cur += _td(days=1)
     return count
 
+def _pair_work_minutes(punches):
+    """依序配對打卡，計算實際工時（分鐘）。
+
+    punches: 可迭代的 (punch_type, tz-aware datetime)。
+    規則：每個 'in' 與其後第一個 'out' 成一段工時，段與段之間的空檔不計
+    （支援一天多段：中午離場、晚上或半夜再進場）；段內 break_out→break_in
+    視為休息時間扣除；可跨午夜（只看時間先後，不看日曆日）。
+    回傳 dict(net_minutes, break_minutes, first_in, last_out, segments, has_in, has_out)。
+    """
+    pts = sorted(punches, key=lambda x: x[1])
+    work_sec = 0.0
+    break_sec = 0.0
+    open_in = None
+    break_open = None
+    first_in = None
+    last_out = None
+    seg = 0
+    has_in = False
+    has_out = False
+    for ptype, t in pts:
+        if ptype == 'in':
+            has_in = True
+            if open_in is None:                       # 開啟一段（已在段內的重複 in 忽略）
+                open_in = t
+                if first_in is None:
+                    first_in = t
+        elif ptype == 'out':
+            has_out = True
+            if open_in is not None:                   # 收一段
+                if break_open is not None:            # 未收的休息收尾
+                    break_sec += (t - break_open).total_seconds()
+                    break_open = None
+                work_sec += (t - open_in).total_seconds()
+                last_out = t
+                open_in = None
+                seg += 1
+        elif ptype == 'break_out':                    # 開始休息（僅在段內有效）
+            if open_in is not None and break_open is None:
+                break_open = t
+        elif ptype == 'break_in':                     # 結束休息
+            if open_in is not None and break_open is not None:
+                break_sec += (t - break_open).total_seconds()
+                break_open = None
+    net = max(0.0, work_sec - break_sec)
+    return {
+        'net_minutes':   net / 60.0,
+        'break_minutes': break_sec / 60.0,
+        'first_in':      first_in,
+        'last_out':      last_out,
+        'segments':      seg,
+        'has_in':        has_in,
+        'has_out':       has_out,
+    }
+
+
 def _present_day_set(typed_punches):
     """以「進場日」歸班次，回傳有出勤活動的日期集合（'YYYY-MM-DD' 字串）。
 
@@ -5916,7 +5999,8 @@ def _present_day_set(typed_punches):
 def _calc_punch_hours(conn, staff_id, month):
     """
     從打卡記錄計算實際工時（時薪制用）
-    邏輯：每天找最早 in + 最晚 out，扣除休息時間；支援跨日班次
+    邏輯：以「進場日」歸班次，一天可多段（依序配對、各段相加、空檔不計），
+          扣除休息時間；支援跨午夜班次
     回傳 (total_hours, work_days, details)
     """
     from datetime import datetime as _dth, timezone as _tzh, timedelta as _tdh, date as _dateh
@@ -5970,35 +6054,21 @@ def _calc_punch_hours(conn, staff_id, month):
     total_hours = 0.0
     details     = []
     for ds, punches in sorted(day_map.items()):
-        ins   = [p['dt'] for p in punches if p['type'] == 'in']
-        outs  = [p['dt'] for p in punches if p['type'] == 'out']
-        b_out = [p['dt'] for p in punches if p['type'] == 'break_out']
-        b_in  = [p['dt'] for p in punches if p['type'] == 'break_in']
-
-        if not ins or not outs:
+        res = _pair_work_minutes([(p['type'], p['dt']) for p in punches])
+        # 需有完整配對（至少一段 in→out）才計工時
+        if not res['first_in'] or not res['last_out']:
             continue
-
-        work_start = min(ins)
-        work_end   = max(outs)
-        gross_mins = (work_end - work_start).total_seconds() / 60
-
-        # 扣除休息時間
-        break_mins = 0.0
-        for bo in b_out:
-            # 找最近的 break_in
-            matched = [bi for bi in b_in if bi > bo]
-            if matched:
-                break_mins += (min(matched) - bo).total_seconds() / 60
-
-        net_mins = max(0.0, gross_mins - break_mins)
-        net_hrs  = round(net_mins / 60, 2)
+        net_hrs = round(res['net_minutes'] / 60, 2)
+        if net_hrs <= 0:
+            continue
         total_hours += net_hrs
         details.append({
             'date':        ds,
-            'clock_in':    work_start.strftime('%H:%M'),
-            'clock_out':   work_end.strftime('%H:%M'),
-            'break_mins':  round(break_mins),
+            'clock_in':    res['first_in'].strftime('%H:%M'),
+            'clock_out':   res['last_out'].strftime('%H:%M'),
+            'break_mins':  round(res['break_minutes']),
             'net_hours':   net_hrs,
+            'segments':    res['segments'],
         })
 
     return round(total_hours, 2), len(details), details
@@ -6182,7 +6252,7 @@ def _auto_generate_salary(conn, staff, month, work_days=None, batch_ctx=None):
         return calculated_amt, False
 
     # ── 司機補貼：本月已核准的 LINE 逐趟申請（先載入，供去重判斷）──────────────
-    # 規則：本月「有」逐趟申請核准 → 採逐趟金額；「沒有」→ 給固定津貼當底，
+    # 規則：本月「有」逐趟申請核准 → 採逐趟金額；「沒有」→ 給固定津貼 125 當底，
     # 兩者擇一，不重複給。
     _drv_ms, _drv_me = _month_range(month)
     if batch_ctx is not None:
@@ -7357,10 +7427,11 @@ def api_salary_settings_put():
     if payroll_day < 1 or payroll_day > 28:
         return jsonify({'error': '結算日必須介於 1~28'}), 400
     with get_db() as conn:
-        conn.execute(
-            "UPDATE salary_config SET payroll_day=%s, updated_at=NOW() WHERE id=1",
-            (payroll_day,)
-        )
+        conn.execute("""
+            INSERT INTO salary_config (id, payroll_day, updated_at)
+            VALUES (1, %s, NOW())
+            ON CONFLICT (id) DO UPDATE SET payroll_day=EXCLUDED.payroll_day, updated_at=NOW()
+        """, (payroll_day,))
     return jsonify({'ok': True, 'payroll_day': payroll_day})
 
 @app.route('/api/salary/payroll-check', methods=['GET'])
@@ -7394,7 +7465,8 @@ def api_salary_staff_list():
         rows = conn.execute("""
             SELECT id, name, username, role, active, employee_code, department,
                    position_title, hire_date, birth_date, base_salary, insured_salary,
-                   daily_hours, ot_rate1, ot_rate2, salary_type, hourly_rate,
+                   daily_hours, ot_rate1, ot_rate2, ot_rate_holiday, ot_rate_special,
+                   salary_type, hourly_rate,
                    vacation_quota, salary_notes, salary_item_ids, salary_item_overrides,
                    national_id, gender, insurance_type, address,
                    meal_allowance, driver_allowance
@@ -7403,7 +7475,8 @@ def api_salary_staff_list():
     result = []
     for r in rows:
         d = dict(r)
-        for f in ['base_salary','insured_salary','daily_hours','ot_rate1','ot_rate2','hourly_rate',
+        for f in ['base_salary','insured_salary','daily_hours','ot_rate1','ot_rate2',
+                  'ot_rate_holiday','ot_rate_special','hourly_rate',
                   'meal_allowance','driver_allowance']:
             if d.get(f) is not None: d[f] = float(d[f])
         if d.get('hire_date'):  d['hire_date']  = d['hire_date'].isoformat()
@@ -20748,14 +20821,6 @@ def _pdf_styles():
     return styles, font
 
 
-def _make_pdf_response(pdf_bytes: bytes, filename: str):
-    from flask import make_response
-    resp = make_response(pdf_bytes)
-    resp.headers['Content-Type'] = 'application/pdf'
-    resp.headers['Content-Disposition'] = f'inline; filename="{filename}"'
-    return resp
-
-
 def _company_name(conn):
     """薪資單抬頭公司名稱：取主管理員帳號的顯示名稱。"""
     try:
@@ -21106,6 +21171,7 @@ def api_export_payslip_pdf(rid):
     pdf = _build_payslip_pdf(record, vm)
     fname = f"payslip_{record.get('staff_name',rid)}_{record.get('month','')}.pdf"
     return _make_pdf_response(pdf, fname)
+
 
 def _build_quote_pdf(quote: dict) -> bytes:
     import io
@@ -23255,3 +23321,7 @@ def api_export_labor_pension():
     fname = f'labor_pension_{year}{("_"+month[5:7]) if month else ""}.xlsx'
     return send_file(buf, as_attachment=True, download_name=fname,
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+# ─── 背景執行緒啟動（必須放在所有函式定義之後）─────────────────────────────────
+threading.Thread(target=_annual_leave_sync_loop, daemon=True).start()

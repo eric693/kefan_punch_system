@@ -1296,12 +1296,12 @@ function updateOTHoursPreview(){
   if(mins<=0)mins+=24*60;
   const hrs=Math.round(mins/60*100)/100;
   let detail='';
-  if(dt==='rest_day'){
+  if(dt==='holiday'||dt==='special'){detail=staffT('ot.detail_hol').replace('{0}',staffT('ot.'+dt+'_short')).replace('{1}',hrs);}
+  else if(dt==='rest_day'){
     const h1=Math.min(hrs,2).toFixed(1),h2=Math.max(0,Math.min(hrs,8)-2).toFixed(1),h3=Math.max(0,hrs-8).toFixed(1);
     detail=staffT('ot.detail_rest').replace('{0}',h1).replace('{1}',h2);
     if(hrs>8)detail+=staffT('ot.detail_rest_x3').replace('{0}',h3);
   }
-  else if(dt==='holiday'||dt==='special'){detail=staffT('ot.detail_hol').replace('{0}',staffT('ot.'+dt+'_short')).replace('{1}',hrs);}
   else{const h1=Math.min(hrs,2).toFixed(1),h2=Math.max(0,hrs-2).toFixed(1);detail=staffT('ot.detail_weekday').replace('{0}',h1).replace('{1}',h2);}
   el.innerHTML=`<strong>${staffT('ot.hours_title').replace('{0}',hrs)}</strong>　<span style="color:var(--muted)">${detail}</span>`;
 }
@@ -3276,7 +3276,6 @@ const STAFF_I18N = {
     'ot.hours_label':'加班 {0} 小時','ot.pay_label':'加班費：','ot.review_note':'意見：',
     'ot.auto_holiday':'已自動偵測為國定假日：',
     'ot.detail_weekday':'平日：前{0}h×1.34 + 後{1}h×1.67',
-    'ot.detail_rest':'休息日：前{0}h×1.34 + 第3~8h {1}h×1.67','ot.detail_rest_x3':' + 第9h起 {0}h×2.67',
     'ot.detail_hol':'{0}：{1}h × 2 倍',
     'ot.hours_title':'加班時數：{0} 小時',
     'exp.loading':'載入中...','exp.no_records':'尚無申請記錄',
@@ -3313,7 +3312,7 @@ const STAFF_I18N = {
     'field.ot_end':'結束時間',
     'field.ot_day_type':'加班日別',
     'opt.ot_weekday':'平日（前2h×1.34，後續×1.67）',
-    'opt.ot_rest_day':'休息日（9h起×2.67）',
+    'opt.ot_rest_day':'休息日（9h起×2.67）','ot.detail_rest':'休息日：前{0}h×1.34 + 第3~8h {1}h×1.67','ot.detail_rest_x3':' + 第9h起 {0}h×2.67',
     'opt.ot_holiday':'國定假日（全程×2倍）',
     'opt.ot_special':'例假日（全程×2倍）',
     'field.ot_reason':'加班原因 *',
@@ -3549,7 +3548,6 @@ const STAFF_I18N = {
     'ot.hours_label':'OT: {0} hrs','ot.pay_label':'OT Pay: ','ot.review_note':'Note: ',
     'ot.auto_holiday':'Auto-detected as public holiday: ',
     'ot.detail_weekday':'Weekday: first {0}h×1.34 + next {1}h×1.67',
-    'ot.detail_rest':'Rest Day: first {0}h×1.34 + 3rd-8th {1}h×1.67','ot.detail_rest_x3':' + from 9th {0}h×2.67',
     'ot.detail_hol':'{0}: {1}h × 2',
     'ot.hours_title':'OT Hours: {0}h',
     'exp.loading':'Loading...','exp.no_records':'No records',
@@ -3586,7 +3584,7 @@ const STAFF_I18N = {
     'field.ot_end':'End Time',
     'field.ot_day_type':'OT Type',
     'opt.ot_weekday':'Weekday (first 2h×1.34, rest×1.67)',
-    'opt.ot_rest_day':'Rest Day (from 9h×2.67)',
+    'opt.ot_rest_day':'Rest Day (from 9h×2.67)','ot.detail_rest':'Rest Day: first {0}h×1.34 + 3rd-8th {1}h×1.67','ot.detail_rest_x3':' + from 9th {0}h×2.67',
     'opt.ot_holiday':'Public Holiday (all×2)',
     'opt.ot_special':'Special Holiday (all×2)',
     'field.ot_reason':'OT Reason *',
@@ -3815,7 +3813,6 @@ const STAFF_I18N = {
     'ot.hours_label':'残業 {0} 時間','ot.pay_label':'残業代：','ot.review_note':'コメント：',
     'ot.auto_holiday':'祝日として自動検出：',
     'ot.detail_weekday':'平日：最初{0}h×1.34 + 残り{1}h×1.67',
-    'ot.detail_rest':'休日：最初{0}h×1.34 + 3~8時間目{1}h×1.67','ot.detail_rest_x3':' + 9時間目以降{0}h×2.67',
     'ot.detail_hol':'{0}：{1}h × 2',
     'ot.hours_title':'残業時間：{0}h',
     'exp.loading':'読み込み中...','exp.no_records':'記録なし',
@@ -3852,7 +3849,7 @@ const STAFF_I18N = {
     'field.ot_end':'終了時刻',
     'field.ot_day_type':'残業日種別',
     'opt.ot_weekday':'平日（最初2h×1.34、以降×1.67）',
-    'opt.ot_rest_day':'休日（9時間目以降×2.67）',
+    'opt.ot_rest_day':'休日（9時間目以降×2.67）','ot.detail_rest':'休日：最初{0}h×1.34 + 3~8時間目{1}h×1.67','ot.detail_rest_x3':' + 9時間目以降{0}h×2.67',
     'opt.ot_holiday':'祝日（全程×2）',
     'opt.ot_special':'法定休日（全程×2）',
     'field.ot_reason':'残業理由 *',
@@ -4081,7 +4078,6 @@ const STAFF_I18N = {
     'ot.hours_label':'Tăng ca: {0} giờ','ot.pay_label':'Phụ cấp: ','ot.review_note':'Nhận xét: ',
     'ot.auto_holiday':'Tự động nhận diện ngày lễ: ',
     'ot.detail_weekday':'Ngày thường: {0}h đầu×1.34 + {1}h sau×1.67',
-    'ot.detail_rest':'Ngày nghỉ: {0}h đầu×1.34 + giờ 3~8 {1}h×1.67','ot.detail_rest_x3':' + từ giờ 9 {0}h×2.67',
     'ot.detail_hol':'{0}: {1}h × 2',
     'ot.hours_title':'Số giờ tăng ca: {0}h',
     'exp.loading':'Đang tải...','exp.no_records':'Chưa có hồ sơ',
@@ -4118,7 +4114,7 @@ const STAFF_I18N = {
     'field.ot_end':'Giờ kết thúc',
     'field.ot_day_type':'Loại ngày tăng ca',
     'opt.ot_weekday':'Ngày thường (2h đầu×1.34, sau×1.67)',
-    'opt.ot_rest_day':'Ngày nghỉ (từ 9h×2.67)',
+    'opt.ot_rest_day':'Ngày nghỉ (từ 9h×2.67)','ot.detail_rest':'Ngày nghỉ: {0}h đầu×1.34 + giờ 3~8 {1}h×1.67','ot.detail_rest_x3':' + từ giờ 9 {0}h×2.67',
     'opt.ot_holiday':'Ngày lễ (tất cả×2)',
     'opt.ot_special':'Nghỉ bù (tất cả×2)',
     'field.ot_reason':'Lý do tăng ca *',
@@ -4347,7 +4343,6 @@ const STAFF_I18N = {
     'ot.hours_label':'ล่วงเวลา: {0} ชม.','ot.pay_label':'ค่าล่วงเวลา: ','ot.review_note':'หมายเหตุ: ',
     'ot.auto_holiday':'ตรวจพบวันหยุดนักขัตฤกษ์อัตโนมัติ: ',
     'ot.detail_weekday':'วันทำงาน: {0}ชม.แรก×1.34 + {1}ชม.ถัดไป×1.67',
-    'ot.detail_rest':'วันหยุด: {0}ชม.แรก×1.34 + ชม.3~8 {1}ชม.×1.67','ot.detail_rest_x3':' + ตั้งแต่ ชม.9 {0}ชม.×2.67',
     'ot.detail_hol':'{0}: {1}ชม. × 2',
     'ot.hours_title':'ชั่วโมงล่วงเวลา: {0}ชม.',
     'exp.loading':'กำลังโหลด...','exp.no_records':'ยังไม่มีรายการ',
@@ -4384,7 +4379,7 @@ const STAFF_I18N = {
     'field.ot_end':'เวลาสิ้นสุด',
     'field.ot_day_type':'ประเภทวันล่วงเวลา',
     'opt.ot_weekday':'วันทำงาน (2ชม.แรก×1.34, ต่อไป×1.67)',
-    'opt.ot_rest_day':'วันหยุด (ตั้งแต่ 9ชม.×2.67)',
+    'opt.ot_rest_day':'วันหยุด (ตั้งแต่ 9ชม.×2.67)','ot.detail_rest':'วันหยุด: {0}ชม.แรก×1.34 + ชม.3~8 {1}ชม.×1.67','ot.detail_rest_x3':' + ตั้งแต่ ชม.9 {0}ชม.×2.67',
     'opt.ot_holiday':'วันหยุดนักขัตฤกษ์ (ทั้งหมด×2)',
     'opt.ot_special':'วันหยุดพิเศษ (ทั้งหมด×2)',
     'field.ot_reason':'เหตุผลล่วงเวลา *',
@@ -4613,7 +4608,6 @@ const STAFF_I18N = {
     'ot.hours_label':'加班 {0} 小时','ot.pay_label':'加班费：','ot.review_note':'意见：',
     'ot.auto_holiday':'已自动检测为法定节假日：',
     'ot.detail_weekday':'平日：前{0}h×1.34 + 后{1}h×1.67',
-    'ot.detail_rest':'休息日：前{0}h×1.34 + 第3~8h {1}h×1.67','ot.detail_rest_x3':' + 第9h起 {0}h×2.67',
     'ot.detail_hol':'{0}：{1}h × 2 倍',
     'ot.hours_title':'加班时数：{0} 小时',
     'exp.loading':'加载中...','exp.no_records':'暂无申请记录',
@@ -4649,7 +4643,7 @@ const STAFF_I18N = {
     'field.ot_end':'结束时间',
     'field.ot_day_type':'加班日别',
     'opt.ot_weekday':'平日（前2h×1.34，后续×1.67）',
-    'opt.ot_rest_day':'休息日（9h起×2.67）',
+    'opt.ot_rest_day':'休息日（9h起×2.67）','ot.detail_rest':'休息日：前{0}h×1.34 + 第3~8h {1}h×1.67','ot.detail_rest_x3':' + 第9h起 {0}h×2.67',
     'opt.ot_holiday':'法定节假日（全程×2倍）',
     'opt.ot_special':'例假日（全程×2倍）',
     'field.ot_reason':'加班原因 *',
@@ -4878,7 +4872,6 @@ const STAFF_I18N = {
     'ot.hours_label':'Lembur: {0} jam','ot.pay_label':'Upah Lembur: ','ot.review_note':'Catatan: ',
     'ot.auto_holiday':'Terdeteksi otomatis sebagai hari raya: ',
     'ot.detail_weekday':'Hari kerja: {0}j pertama×1.34 + {1}j berikutnya×1.67',
-    'ot.detail_rest':'Hari libur: {0}j pertama×1.34 + jam 3~8 {1}j×1.67','ot.detail_rest_x3':' + dari jam 9 {0}j×2.67',
     'ot.detail_hol':'{0}: {1}j × 2',
     'ot.hours_title':'Jam Lembur: {0}j',
     'exp.loading':'Memuat...','exp.no_records':'Belum ada data',
@@ -4915,7 +4908,7 @@ const STAFF_I18N = {
     'field.ot_end':'Waktu Selesai',
     'field.ot_day_type':'Jenis Hari Lembur',
     'opt.ot_weekday':'Hari Kerja (2j pertama×1.34, selebihnya×1.67)',
-    'opt.ot_rest_day':'Hari Libur (dari 9j×2.67)',
+    'opt.ot_rest_day':'Hari Libur (dari 9j×2.67)','ot.detail_rest':'Hari libur: {0}j pertama×1.34 + jam 3~8 {1}j×1.67','ot.detail_rest_x3':' + dari jam 9 {0}j×2.67',
     'opt.ot_holiday':'Hari Raya (semua×2)',
     'opt.ot_special':'Hari Libur Khusus (semua×2)',
     'field.ot_reason':'Alasan Lembur *',
